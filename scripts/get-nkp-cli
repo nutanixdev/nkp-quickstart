@@ -29,7 +29,7 @@
 #------------------------------------------------------------------------------
 
 # Prompt the user for the download link
-read -p "Enter 'NKP for Linux' download link: " url
+read -p "Enter 'NKP for Linux' download link: " url < /dev/tty
 
 # Check if URL is empty
 if [ -z "$url" ]; then
