@@ -19,7 +19,7 @@
 For NKP CLI:
 
 - Internet connectivity
-- Add NKP Rocky Linux to Prism Central [Nutanix Portal](https://portal.nutanix.com/page/downloads?product=nkp)
+- Add NKP Rocky Linux to Prism Central. **DO NOT CHANGE** the auto-populated image name. [Nutanix Portal](https://portal.nutanix.com/page/downloads?product=nkp)
 
 For NKP cluster creation:
 
@@ -60,6 +60,11 @@ For NKP cluster creation:
         - mv ./kubectl /usr/local/bin/kubectl
         - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
         ```
+
+    <details>
+    <summary>click to view example</summary>
+    <IMG src="./images/create_vm_summary.png" atl="Create VM summary" />
+    </details>
 
 1. Power on the virtual machine
 
