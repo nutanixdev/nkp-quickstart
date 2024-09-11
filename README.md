@@ -10,29 +10,29 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. Use the cloud-init script included
 
-    <details>
-    <summary>click to view example</summary>
-    <pre><code>
-    #cloud-config
-    ssh_pwauth: true
-    chpasswd:
-      expire: false
-      users:
-      - name: nutanix
-        password: nutanix/4u
-        type: text
-    runcmd:
-    - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
-    - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    - dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    - systemctl --now enable docker
-    - usermod -aG docker nutanix
-    - 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
-    - chmod +x ./kubectl
-    - mv ./kubectl /usr/local/bin/kubectl
-    - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
-    </code></pre>
-    </details>
+<details>
+<summary>click to view cloud-init script</summary>
+<pre><code>
+# cloud-config
+ssh_pwauth: true
+chpasswd:
+  expire: false
+  users:
+  - name: nutanix
+    password: nutanix/4u
+    type: text
+runcmd:
+- mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
+- dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+- dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+- systemctl --now enable docker
+- usermod -aG docker nutanix
+- 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
+- chmod +x ./kubectl
+- mv ./kubectl /usr/local/bin/kubectl
+- '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+</code></pre>
+</details>
 
 1. SSH to `nutanix@<JUMPHOST_IP>`
 
