@@ -32,34 +32,34 @@ For NKP cluster creation:
 
 1. Create a virtual machine
 
-    Name: nkp-jumphost
-    vCPUs: 2
-    Memory: 4
-    Disk: Clone from Image (select the Rocky Linux you previously uploaded)
-    Disk Capacity: 128 (default is 20)
-    Guest Customization: Cloud-init (Linux)
-    Custom Script:
+    - Name: nkp-jumphost
+    - vCPUs: 2
+    - Memory: 4
+    - Disk: Clone from Image (select the Rocky Linux you previously uploaded)
+    - Disk Capacity: 128 (default is 20)
+    - Guest Customization: Cloud-init (Linux)
+    - Custom Script:
 
-    ```yaml
-    #cloud-config
-    ssh_pwauth: true
-    chpasswd:
-        expire: false
-        users:
-        - name: nutanix
-            password: nutanix/4u
-            type: text
-    runcmd:
-    - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
-    - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    - dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    - systemctl --now enable docker
-    - usermod -aG docker nutanix
-    - 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
-    - chmod +x ./kubectl
-    - mv ./kubectl /usr/local/bin/kubectl
-    - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
-    ```
+        ```yaml
+        #cloud-config
+        ssh_pwauth: true
+        chpasswd:
+            expire: false
+            users:
+            - name: nutanix
+                password: nutanix/4u
+                type: text
+        runcmd:
+        - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
+        - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        - dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        - systemctl --now enable docker
+        - usermod -aG docker nutanix
+        - 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
+        - chmod +x ./kubectl
+        - mv ./kubectl /usr/local/bin/kubectl
+        - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+        ```
 
 1. Power on the virtual machine
 
