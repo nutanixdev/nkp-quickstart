@@ -4,24 +4,26 @@
 
 1. [Overview](#overview)
 
-1. [Prerequisites checklist](#prerequisites-checklist)
+1. [Prerequisites Checklist](#prerequisites-checklist)
 
-1. [Deploy Linux jumphost](#deploy-linux-jumphost)
+1. [Deploy Linux Jumphost](#deploy-linux-jumphost)
 
 1. [Install NKP CLI](#install-nkp-cli)
 
-1. [Create NKP cluster on Nutanix](#create-nkp-cluster-on-nutanix)
+1. [(Optional) Create NKP Cluster on Nutanix](#optional-create-nkp-cluster-on-nutanix)
 
 ## Overview
 
-## Prerequisites checklist
+The NKP CLI is a command-line interface for managing NKP-based workflows. This guide provides a quick and easy way to install the NKP CLI using the Rocky Linux image provided by Nutanix in the [Nutanix Support Portal](https://portal.nutanix.com/page/downloads?product=nkp).
+
+## Prerequisites Checklist
 
 For NKP CLI:
 
 - Internet connectivity
-- Add NKP Rocky Linux to Prism Central. **DO NOT CHANGE** the auto-populated image name. [Nutanix Portal](https://portal.nutanix.com/page/downloads?product=nkp)
+- Add NKP Rocky Linux to Prism Central. **DO NOT CHANGE** the auto-populated image name
 
-For NKP cluster creation:
+(Optional) For NKP cluster creation:
 
 - Static IP address for the control plane VIP
 - One or more IP addresses for the NKP dashboard and load balancing service
@@ -84,7 +86,7 @@ For NKP cluster creation:
 
     When prompted, you must use the download link AS-IS available in the Nutanix portal.
 
-## Create NKP cluster on Nutanix
+## (Optional) Create NKP cluster on Nutanix
 
 ## Support and Disclaimer
 
