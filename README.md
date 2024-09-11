@@ -1,16 +1,16 @@
 # Nutanix Kubernetes Platform - Quickstart Guide
 
-## Table of Content
+## Table of Contents
 
-1. Overview
+1. [Overview](#overview)
 
-1. Prerequisites checklist
+1. [Prerequisites checklist](#prerequisites-checklist)
 
-1. Deploy Linux jumphost
+1. [Deploy Linux jumphost](#deploy-linux-jumphost)
 
-1. Install NKP CLI
+1. [Install NKP CLI](#install-nkp-cli)
 
-1. Create NKP cluster on Nutanix
+1. [Create NKP cluster on Nutanix](#create-nkp-cluster-on-nutanix)
 
 ## Overview
 
