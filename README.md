@@ -31,7 +31,11 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. SSH to `nutanix@<JUMPHOST_IP>`
 
-1. Run the command `curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash`
+1. Install the CLIs with the command:
+
+    ```shell
+    curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
+    ```
 
 ## Table of Contents
 
