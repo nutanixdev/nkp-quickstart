@@ -6,7 +6,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. Add NKP Rocky Linux image from the Nutanix Support Portal to Prism Central
 
-1. Create a jumphost with 2 vCPUs & 4 GB memory using the Rocky image and the following Cloud-init custom script
+1. Create a jumphost with 2 vCPUs, 4 GB memory, use the Rocky image (update disk to 128 GiB), and the following Cloud-init custom script
 
     ```yaml
     #cloud-config
@@ -29,7 +29,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
     - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
     ```
 
-1. SSH to `nutanix@<JUMPHOST_IP>`
+1. SSH to `nutanix@<JUMPHOST_IP>` (default password: nutanix/4u)
 
 1. Install the CLIs with the command:
 
@@ -114,7 +114,7 @@ For NKP CLI:
 
 ## Install NKP CLI
 
-1. Connect to your jumphost using SSH.
+1. Connect to your jumphost using SSH (default password: nutanix/4u)
 
     ```shell
     ssh nutanix@<JUMPHOST_IP>
