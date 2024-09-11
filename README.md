@@ -181,18 +181,18 @@ This installation method lets you fully customize your cluster configuration. Th
 1. Before running the following command in your jump host VM, update the values with your environment:
 
     ```shell
-    export CLUSTER_NAME=nkp # NKP cluster name. When using NKP Pro/Ultimate, this name is used to generate the license key
-    export NUTANIX_USER=admin # Prism Central username
-    export NUTANIX_PASSWORD='' # Keep the password enclosed between single quotes - Ex: 'password'
-    export NUTANIX_ENDPOINT= # Prism Central IP address
-    export NUTANIX_PORT=9440 # Prism Central port (default: 9440)
-    export CONTROL_PLANE_ENDPOINT_IP= # Kubernetes VIP. Must be in the same subnet as the VMs - Ex: 10.42.236.203
+    export CLUSTER_NAME=nkp                         # NKP cluster name. When using NKP Pro/Ultimate, this name is used to generate the license key
+    export NUTANIX_USER=admin                       # Prism Central username
+    export NUTANIX_PASSWORD=''                      # Keep the password enclosed between single quotes - Ex: 'password'
+    export NUTANIX_ENDPOINT=                        # Prism Central IP address
+    export NUTANIX_PORT=9440                        # Prism Central port (default: 9440)
+    export LB_IP_RANGE=10.38.141.18-10.38.141.18    # Load balancer IP pool - Ex: 10.42.236.204-10.42.236.204
+    export CONTROL_PLANE_ENDPOINT_IP=               # Kubernetes VIP. Must be in the same subnet as the VMs - Ex: 10.42.236.203
     export NUTANIX_MACHINE_TEMPLATE_IMAGE_NAME=nkp-rocky-9.4-release-1.29.6-20240816215147.qcow2 # Update with the NKP Rocky image name
-    export NUTANIX_PRISM_ELEMENT_CLUSTER_NAME= # Prism Element cluster name - Ex: PHX-POC207
-    export NUTANIX_SUBNET_NAME= # Ex: primary
-    export REGISTRY_MIRROR_URL=registry.nutanixdemo.com/docker.io # Required on Nutanix HPOC
-    export NUTANIX_STORAGE_CONTAINER_NAME=SelfServiceContainer # Change to your preferred Prism storage container
-    export LB_IP_RANGE=10.38.141.18-10.38.141.18 # Load balancer IP pool - Ex: 10.42.236.204-10.42.236.204
+    export NUTANIX_PRISM_ELEMENT_CLUSTER_NAME=      # Prism Element cluster name - Ex: PHX-POC207
+    export NUTANIX_SUBNET_NAME=                     # Ex: primary
+    export NUTANIX_STORAGE_CONTAINER_NAME=SelfServiceContainer      # Change to your preferred Prism storage container
+    export REGISTRY_MIRROR_URL=registry.nutanixdemo.com/docker.io   # Required on Nutanix HPOC
     ```
 
 1. The next command will start the installation process of an NKP management cluster:
