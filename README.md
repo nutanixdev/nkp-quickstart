@@ -28,6 +28,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
     - mv ./kubectl /usr/local/bin/kubectl
     - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
     - eject
+    - 'wall "The machine is ready. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"'
     final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"
     ```
 
@@ -106,6 +107,7 @@ For NKP CLI:
         - mv ./kubectl /usr/local/bin/kubectl
         - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
         - eject
+        - 'wall "The machine is ready. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"'
         final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"
         ```
 
