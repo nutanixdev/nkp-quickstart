@@ -17,6 +17,14 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
       - name: nutanix
         password: nutanix/4u # Recommended to change the password or update the script to use SSH keys
         type: text
+    bootcmd:
+    - mkdir -p /etc/docker
+    write_files:
+    - content: |
+        {
+            "insecure-registries": ["registry.nutanixdemo.com"]
+        }
+      path: /etc/docker/daemon.json
     runcmd:
     - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
     - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
@@ -28,7 +36,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
     - mv ./kubectl /usr/local/bin/kubectl
     - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
     - eject
-    - 'wall "The machine is ready. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"'
+    - 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
     final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"
     ```
 
@@ -98,6 +106,14 @@ For NKP CLI:
           - name: nutanix
             password: nutanix/4u # Recommended to change the password or update the script to use SSH keys
             type: text
+        bootcmd:
+        - mkdir -p /etc/docker
+        write_files:
+        - content: |
+            {
+                "insecure-registries": ["registry.nutanixdemo.com"]
+            }
+          path: /etc/docker/daemon.json
         runcmd:
         - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
         - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
@@ -109,7 +125,7 @@ For NKP CLI:
         - mv ./kubectl /usr/local/bin/kubectl
         - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
         - eject
-        - 'wall "The machine is ready. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"'
+        - 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
         final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"
         ```
 
@@ -137,6 +153,70 @@ For NKP CLI:
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
 
 ## (Optional) Create NKP cluster on Nutanix
+
+1. Before you start, ensure you meet the prerequisites:
+
+    - Static IP address for the control plane VIP
+    - One or more IP addresses for the NKP dashboard and load-balancing service
+
+    Note: The IP addresses must be in the same subnet as the virtual machines.
+
+1. Choose one of the following two installation methods:
+
+    - **Prompt-based installation**. Use this method when the Internet connection for the NKP cluster isn’t shared with more users.
+    - **CLI installation**. Use this method when the Internet connection for the NKP cluster is shared between many users.
+
+### Prompt-based installation
+
+This installation method gives less control on the cluster configuration. For example, the NKP cluster will be created with three control plane nodes and four worker nodes.
+
+```shell
+nkp create cluster nutanix
+```
+
+### CLI installation
+
+This installation method lets you fully customize your cluster configuration. The following commands create a cluster with one control plane node and three worker nodes.
+
+1. Before running the following command in your jump host VM, update the values with your environment:
+
+    ```shell
+    export CLUSTER_NAME=nkp # NKP cluster name. When using NKP Pro/Ultimate, this name is used to generate the license key
+    export NUTANIX_USER=admin # Prism Central username
+    export NUTANIX_PASSWORD='' # Keep the password enclosed between single quotes - Ex: 'password'
+    export NUTANIX_ENDPOINT= # Prism Central IP address
+    export NUTANIX_PORT=9440 # Prism Central port (default: 9440)
+    export CONTROL_PLANE_ENDPOINT_IP= # Kubernetes VIP. Must be in the same subnet as the VMs - Ex: 10.42.236.203
+    export NUTANIX_MACHINE_TEMPLATE_IMAGE_NAME=nkp-rocky-9.4-release-1.29.6-20240816215147.qcow2 # Update with the NKP Rocky image name
+    export NUTANIX_PRISM_ELEMENT_CLUSTER_NAME= # Prism Element cluster name - Ex: PHX-POC207
+    export NUTANIX_SUBNET_NAME= # Ex: primary
+    export REGISTRY_MIRROR_URL=registry.nutanixdemo.com/docker.io # Required on Nutanix HPOC
+    export NUTANIX_STORAGE_CONTAINER_NAME=SelfServiceContainer # Change to your preferred Prism storage container
+    export LB_IP_RANGE=10.38.141.18-10.38.141.18 # Load balancer IP pool - Ex: 10.42.236.204-10.42.236.204
+    ```
+
+1. The next command will start the installation process of an NKP management cluster:
+
+    ```shell
+    nkp create cluster nutanix -c $CLUSTER_NAME \
+        --kind-cluster-image $REGISTRY_MIRROR_URL/mesosphere/konvoy-bootstrap:v2.12.0 \
+        --endpoint https://$NUTANIX_ENDPOINT:$NUTANIX_PORT \
+        --insecure \
+        --kubernetes-service-load-balancer-ip-range $LB_IP_RANGE \
+        --control-plane-endpoint-ip $CONTROL_PLANE_ENDPOINT_IP \
+        --control-plane-vm-image $NUTANIX_MACHINE_TEMPLATE_IMAGE_NAME \
+        --control-plane-prism-element-cluster $NUTANIX_PRISM_ELEMENT_CLUSTER_NAME \
+        --control-plane-subnets $NUTANIX_SUBNET_NAME \
+        --control-plane-replicas 1 \
+        --worker-vm-image $NUTANIX_MACHINE_TEMPLATE_IMAGE_NAME \
+        --worker-prism-element-cluster $NUTANIX_PRISM_ELEMENT_CLUSTER_NAME \
+        --worker-subnets $NUTANIX_SUBNET_NAME \
+        --worker-replicas 3 \
+        --csi-storage-container $NUTANIX_STORAGE_CONTAINER_NAME \
+        --csi-hypervisor-attached-volumes=false \
+        --registry-mirror-url http://$REGISTRY_MIRROR_URL \
+        --self-managed
+    ```
 
 ## Support and Disclaimer
 
