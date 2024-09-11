@@ -6,7 +6,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. Add NKP Rocky Linux image from the Nutanix Support Portal to Prism Central
 
-1. Create a jumphost with 2 vCPUs, 4 GB memory, use the Rocky image (update disk to 128 GiB), and the following Cloud-init custom script
+1. Create a jump host with 2 vCPUs, 4 GB memory, use the Rocky image (update disk to 128 GiB), and the following Cloud-init custom script
 
     ```yaml
     #cloud-config
@@ -32,13 +32,15 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
     final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"
     ```
 
-1. SSH to `nutanix@<JUMPHOST_IP>` (default password: nutanix/4u)
+1. SSH to `nutanix@<jump host_IP>` (default password: nutanix/4u)
 
-1. Install the CLIs with the command:
+1. Install the NKP CLI with the command:
 
     ```shell
     curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
     ```
+
+    When prompted, you must use the download link as-is, which is available in the Nutanix portal.
 
 ## Table of Contents
 
@@ -46,7 +48,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. [Prerequisites Checklist](#prerequisites-checklist)
 
-1. [Deploy Linux Jumphost](#deploy-linux-jumphost)
+1. [Deploy Linux jump host](#deploy-linux-jump host)
 
 1. [Install NKP CLI](#install-nkp-cli)
 
@@ -73,13 +75,13 @@ For NKP CLI:
 - Static IP address for the control plane VIP
 - One or more IP addresses for the NKP dashboard and load balancing service
 
-## Deploy Linux Jumphost
+## Deploy Linux jump host
 
 1. Connect to Prism Central
 
 1. Create a virtual machine
 
-    - Name: nkp-jumphost
+    - Name: nkp-jump host
     - vCPUs: 2
     - Memory: 4
     - Disk: Clone from Image (select the Rocky Linux you previously uploaded)
@@ -120,22 +122,22 @@ For NKP CLI:
 
 ## Install NKP CLI
 
-1. Connect to your jumphost using SSH (default password: nutanix/4u)
+1. Connect to your jump host using SSH (default password: nutanix/4u)
 
     ```shell
-    ssh nutanix@<JUMPHOST_IP>
+    ssh nutanix@<jump host_IP>
     ```
 
-1. Download the latest NKP CLI release with the command:
+1. Install the NKP CLI with the command:
 
     ```shell
     curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
     ```
 
-    When prompted, you must use the download link AS-IS available in the Nutanix portal.
+    When prompted, you must use the download link as-is, which is available in the Nutanix portal.
 
 ## (Optional) Create NKP cluster on Nutanix
 
 ## Support and Disclaimer
 
-These code samples are intended as a standalone examples.  Please be aware that all public code samples provided by Nutanix are unofficial in nature, are provided as examples only, are unsupported and will need to be heavily scrutinized and potentially modified before they can be used in a production environment.  All such code samples are provided on an as-is basis, and Nutanix expressly disclaims all warranties, express or implied.  All code samples are © Nutanix, Inc., and are provided as-is under the MIT license (<https://opensource.org/licenses/MIT>).
+These code samples are intended as standalone examples. Please be aware that all public code samples provided by Nutanix are unofficial in nature, are provided as examples only, are unsupported, and will need to be heavily scrutinized and potentially modified before they can be used in a production environment. All such code samples are provided on an as-is basis, and Nutanix expressly disclaims all warranties, express or implied. All code samples are © Nutanix, Inc., and are provided as-is under the MIT license (<https://opensource.org/licenses/MIT>).
