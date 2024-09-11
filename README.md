@@ -56,7 +56,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. [Prerequisites Checklist](#prerequisites-checklist)
 
-1. [Deploy Linux jump host](#deploy-linux-jump host)
+1. [Deploy Linux jump host](#deploy-linux-jump-host)
 
 1. [Install NKP CLI](#install-nkp-cli)
 
