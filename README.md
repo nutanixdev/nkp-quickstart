@@ -23,6 +23,11 @@ For NKP CLI:
 - Internet connectivity
 - Add NKP Rocky Linux to Prism Central. **DO NOT CHANGE** the auto-populated image name
 
+<details>
+<summary>click to view example</summary>
+<IMG src="./images/add_nkp_rocky_os_image.png" atl="Add NKP Rocky OS image" />
+</details>
+
 (Optional) For NKP cluster creation:
 
 - Static IP address for the control plane VIP
