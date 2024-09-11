@@ -15,7 +15,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
       expire: false
       users:
       - name: nutanix
-        password: nutanix/4u
+        password: nutanix/4u # Recommended to change the password or update the script to use SSH keys
         type: text
     runcmd:
     - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
@@ -27,6 +27,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
     - chmod +x ./kubectl
     - mv ./kubectl /usr/local/bin/kubectl
     - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+    - eject
     ```
 
 1. SSH to `nutanix@<JUMPHOST_IP>` (default password: nutanix/4u)
@@ -91,7 +92,7 @@ For NKP CLI:
           expire: false
           users:
           - name: nutanix
-            password: nutanix/4u
+            password: nutanix/4u # Recommended to change the password or update the script to use SSH keys
             type: text
         runcmd:
         - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
@@ -103,6 +104,7 @@ For NKP CLI:
         - chmod +x ./kubectl
         - mv ./kubectl /usr/local/bin/kubectl
         - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+        - eject
         ```
 
     <details>
