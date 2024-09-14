@@ -26,15 +26,14 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
         }
       path: /etc/docker/daemon.json
     runcmd:
-    - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
-    - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    - dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    - '[ ! -f "/etc/yum.repos.d/nutanix_rocky9.repo" ] || mv -f /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled'
+    - dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+    - dnf -y install docker-ce docker-ce-cli containerd.io
     - systemctl --now enable docker
     - usermod -aG docker nutanix
-    - 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
-    - chmod +x ./kubectl
-    - mv ./kubectl /usr/local/bin/kubectl
-    - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+    - 'curl -Lo /usr/local/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
+    - chmod +x /usr/local/bin/kubectl
+    - 'curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
     - eject
     - 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
     final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"
@@ -45,7 +44,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 1. Install the NKP CLI with the command:
 
     ```shell
-    curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
+    curl -fsSL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
     ```
 
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
@@ -115,15 +114,14 @@ For NKP CLI:
             }
           path: /etc/docker/daemon.json
         runcmd:
-        - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
-        - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-        - dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        - '[ ! -f "/etc/yum.repos.d/nutanix_rocky9.repo" ] || mv -f /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled'
+        - dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+        - dnf -y install docker-ce docker-ce-cli containerd.io
         - systemctl --now enable docker
         - usermod -aG docker nutanix
-        - 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
-        - chmod +x ./kubectl
-        - mv ./kubectl /usr/local/bin/kubectl
-        - '\curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+        - 'curl -Lo /usr/local/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
+        - chmod +x /usr/local/bin/kubectl
+        - 'curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
         - eject
         - 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
         final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: $ curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash"
@@ -147,7 +145,7 @@ For NKP CLI:
 1. Install the NKP CLI with the command:
 
     ```shell
-    curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
+    curl -fsSL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
     ```
 
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
@@ -187,7 +185,7 @@ This installation method lets you fully customize your cluster configuration. Th
     export NUTANIX_PASSWORD=''                                      # Keep the password enclosed between single quotes - Ex: 'password'
     export NUTANIX_ENDPOINT=                                        # Prism Central IP address
     export NUTANIX_PORT=9440                                        # Prism Central port (default: 9440)
-    export LB_IP_RANGE=10.38.141.18-10.38.141.18                    # Load balancer IP pool - Ex: 10.42.236.204-10.42.236.204
+    export LB_IP_RANGE=                                             # Load balancer IP range - Ex: 10.42.236.204-10.42.236.204
     export CONTROL_PLANE_ENDPOINT_IP=                               # Kubernetes VIP. Must be in the same subnet as the VMs - Ex: 10.42.236.203
     export NUTANIX_MACHINE_TEMPLATE_IMAGE_NAME=nkp-rocky-9.4-release-1.29.6-20240816215147.qcow2 # Update with the NKP Rocky image name
     export NUTANIX_PRISM_ELEMENT_CLUSTER_NAME=                      # Prism Element cluster name - Ex: PHX-POC207

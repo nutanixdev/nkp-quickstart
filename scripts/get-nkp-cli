@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
 
 #------------------------------------------------------------------------------
 
@@ -19,12 +21,12 @@
 #------------------------------------------------------------------------------
 
 # Maintainer:   Jose Gomez (jose.gomez@nutanix.com)
-# Contributors: 
+# Contributors: Jimmi Dyson (jimmi.dyson@nutanix.com)
 
 #------------------------------------------------------------------------------
 
 # To run:
-# curl -sL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
+# curl -fsSL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
 
 #------------------------------------------------------------------------------
 
@@ -37,31 +39,8 @@ if [ -z "$url" ]; then
     exit 1
 fi
 
-# Download the file with wget and check for errors
-wget -O nkp.tar.gz "$url"
-if [ $? -ne 0 ]; then
-    echo "Download failed. Exiting."
-    exit 1
-fi
-
-# Extract the downloaded file and check for errors
-tar xzf nkp.tar.gz
-if [ $? -ne 0 ]; then
-    echo "Extraction failed. Exiting."
-    exit 1
-fi
-
-# Make the file executable and move it to /usr/local/bin
-chmod +x ./nkp
-if [ $? -eq 0 ]; then
-    sudo mv ./nkp /usr/local/bin
-else
-    echo "Failed to make nkp executable. Exiting."
-    exit 1
-fi
-
-# Clean up downloaded files
-rm -f nkp.tar.gz NOTICES
+# Curl the file and pipe straight to tar to extract to /usr/local/bin
+curl -fsSL "$url" | sudo tar xz -C /usr/local/bin -- nkp
 
 # Success message
 echo "NKP CLI installed successfully!"
