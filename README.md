@@ -212,7 +212,6 @@ This installation method lets you fully customize your cluster configuration. Th
         --worker-subnets $NUTANIX_SUBNET_NAME \
         --worker-replicas 3 \
         --csi-storage-container $NUTANIX_STORAGE_CONTAINER_NAME \
-        --csi-hypervisor-attached-volumes=false \
         --registry-mirror-url http://$REGISTRY_MIRROR_URL \
         --self-managed
     ```
