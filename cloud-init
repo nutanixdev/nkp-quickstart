@@ -4,7 +4,8 @@ ssh_pwauth: true
 users:
 - name: nutanix
   primary_group: nutanix
-  groups: nutanix, docker
+  groups: nutanix, docker, wheel
+  sudo: ['ALL=(ALL) NOPASSWD:ALL']
   lock_passwd: false
   plain_text_passwd: nutanix/4u
 bootcmd:
