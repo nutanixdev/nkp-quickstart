@@ -26,7 +26,7 @@ IFS=$'\n\t'
 #------------------------------------------------------------------------------
 
 # To run:
-# curl -fsSL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/scripts/get-nkp-cli | bash
+# curl -fsSL https://raw.githubusercontent.com/nutanixdev/nkp-quickstart/main/get-nkp-cli | bash
 
 #------------------------------------------------------------------------------
 
