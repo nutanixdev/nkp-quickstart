@@ -231,20 +231,20 @@ echo -e "${CYAN}      OPTIONAL: Deployment Sizing${NC}"
 echo -e "${YELLOW}(Press Enter to use defaults)${NC}"
 echo -e "${YELLOW}=======================================================${NC}"
 
-# Control plane replicas with validation
+# Control plane replicas with validation (must be odd: 1, 3, or 5 for quorum)
 while true; do
-    read -p "Control Plane Replicas (1-5, default: 3): " CP_REPLICAS
-    CP_REPLICAS=${CP_REPLICAS:-3}
-    if [[ "$CP_REPLICAS" =~ ^[1-5]$ ]]; then
+    read -p "Control Plane Replicas (1, 3, or 5 - default: 1): " CP_REPLICAS
+    CP_REPLICAS=${CP_REPLICAS:-1}
+    if [[ "$CP_REPLICAS" =~ ^[135]$ ]]; then
         break
     fi
-    echo -e "${RED}Error: Must be a number between 1 and 5.${NC}"
+    echo -e "${RED}Error: Control plane replicas must be an odd number (1, 3, or 5) for proper quorum.${NC}"
 done
-
+ 
 # Worker replicas with validation
 while true; do
-    read -p "Worker Replicas (1-10, default: 2): " WORKER_REPLICAS
-    WORKER_REPLICAS=${WORKER_REPLICAS:-2}
+    read -p "Worker Replicas (1-10, default: 3): " WORKER_REPLICAS
+    WORKER_REPLICAS=${WORKER_REPLICAS:-3}
     if [[ "$WORKER_REPLICAS" =~ ^([1-9]|10)$ ]]; then
         break
     fi
