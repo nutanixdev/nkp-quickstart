@@ -97,6 +97,8 @@ For NKP cluster creation:
     ```
 
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
+ <img width="1232" height="93" alt="image" src="https://github.com/user-attachments/assets/9bcad1ee-d1ab-47a5-b252-9012a3736cf0" />
+  
 
 ## Create NKP cluster on Nutanix
 
@@ -158,7 +160,8 @@ This method guides you through the entire deployment process interactively with 
 
 4. Review the final deployment summary and confirm to proceed.
 
-5. The deployment typically takes 45-60 minutes. Once complete, configure your kubeconfig:
+<IMG src="./images/finaldeploymentsummary.png" atl="Final Deployment Summary" />
+6. The deployment typically takes 45-60 minutes. Once complete, configure your kubeconfig:
 
     ```shell
     export KUBECONFIG=$(pwd)/<cluster_name>.conf
