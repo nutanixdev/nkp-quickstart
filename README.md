@@ -6,11 +6,11 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. Add NKP Rocky Linux image from the Nutanix Support Portal to Prism Central
 
-1. Create a jump host with 2 vCPUs, 8 GB memory, use the Rocky image (update disk to 128 GiB), and the following Cloud-init custom script : [cloud-init](./cloud-init)
+2. Create a jump host with 2 vCPUs, 8 GB memory, use the Rocky image (update disk to 128 GiB), and the following Cloud-init custom script : [cloud-init](./cloud-init)
 
-1. SSH to `nutanix@<jump host_IP>` (default password: nutanix/4u - unless you modified it in the cloud-init file)
+3. SSH to `nutanix@<jump host_IP>` (default password: nutanix/4u - unless you modified it in the cloud-init file)
 
-1. Install the NKP CLI with the command: [get-nkp-cli](./get-nkp-cli)
+4. Install the NKP CLI with the command: [get-nkp-cli](./get-nkp-cli)
 
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
 
@@ -18,13 +18,16 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 1. [Overview](#overview)
 
-1. [Prerequisites Checklist](#prerequisites-checklist)
+2. [Prerequisites Checklist](#prerequisites-checklist)
 
-1. [Deploy Linux jump host](#deploy-linux-jump-host)
+3. [Deploy Linux jump host](#deploy-linux-jump-host)
 
-1. [Install NKP CLI](#install-nkp-cli)
+4. [Install NKP CLI](#install-nkp-cli)
 
-1. [(Optional) Create NKP Cluster on Nutanix](#optional-create-nkp-cluster-on-nutanix)
+5. [Create NKP Cluster on Nutanix](#optional-create-nkp-cluster-on-nutanix)
+   - [Scripted Automated Deployment](#scripted-automated-deployment-recommended)
+   - [Prompt-based Installation](#prompt-based-installation)
+   - [CLI Installation](#cli-installation)
 
 ## Overview
 
@@ -42,23 +45,26 @@ Ip ranges are provided as example.
 For NKP CLI:
 
 - Internet connectivity
-- Add NKP Rocky Linux to Prism Central. **DO NOT CHANGE** the auto-populated image name
+- Add NKP Node OS Image to Prism Central. **DO NOT CHANGE** the auto-populated image name
 
     <details>
     <summary>click to view example</summary>
     <IMG src="./images/add_nkp_rocky_os_image.png" atl="Add NKP Rocky OS image" />
     </details>
 
-(Optional) For NKP cluster creation:
+For NKP cluster creation:
 
-- Static IP address for the control plane VIP
-- One or more IP addresses for the NKP dashboard and load balancing service
+- The target cluster must be running **AOS 7.3** and **Prism Central (PC) 7.3** or newer.
+- **DHCP/IPAM** is required
+- IP Addresses (must be reachable to jump host)
+  - Static IP address for the control plane VIP
+  - One or more IP addresses for the NKP dashboard and load balancing service
 
 ## Deploy Linux jump host
 
 1. Connect to Prism Central
 
-1. Create a virtual machine
+2. Create a virtual machine
 
     - Name: nkp-jump host
     - vCPUs: 2
@@ -68,7 +74,7 @@ For NKP CLI:
     - Guest Customization: Cloud-init (Linux)
     - Custom Script: [cloud-init](./cloud-init)
 
-1. Power on the virtual machine
+3. Power on the virtual machine
 
 ## Install NKP CLI
 
@@ -78,13 +84,13 @@ For NKP CLI:
     ssh nutanix@<jump host_IP>
     ```
 
-1. git clone this repo
+2. git clone this repo
 
     ```shell
     git clone https://github.com/nutanixdev/nkp-quickstart.git
     ```
 
-1. Install the NKP CLI with the command: [get-nkp-cli](./get-nkp-cli)
+3. Install the NKP CLI with the command: [get-nkp-cli](./get-nkp-cli)
 
     ```shell
     ./get-nkp-cli
@@ -92,37 +98,135 @@ For NKP CLI:
 
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
 
-## (Optional) Create NKP cluster on Nutanix
+## Create NKP cluster on Nutanix
 
-1. Before you start, ensure you meet the prerequisites:
+Before creating a cluster, ensure you meet the prerequisites:
 
-    - Static IP address for the control plane VIP
-    - One or more IP addresses for the NKP dashboard and load-balancing service
+- Static IP address for the control plane VIP (must be outside of IPAM scope)
+- One or more IP addresses for the NKP dashboard and load-balancing service (must be outside of IPAM scope)
+- IP addresses must be in the same subnet as the virtual machines
+- Access to the Nutanix Support Portal to download the NKP Bundle
 
-    Note: The IP addresses must be in the same subnet as the virtual machines.
+Choose one of the following installation methods based on your needs:
 
-1. Choose one of the following two installation methods:
+### Scripted Automated Deployment (Recommended)
 
-    - **Prompt-based installation**. Use this method when the Internet connection for the NKP cluster isn’t shared with more users.
-    - **CLI installation**. Use this method when the Internet connection for the NKP cluster is shared between many users.
+This method guides you through the entire deployment process interactively with automatic validation and error checking. It's ideal for first-time users and provides:
 
-### Prompt-based installation
+- ✅ **Automated system prerequisite validation** - Checks and configures cgroup v2 delegation automatically
+- ✅ **Smart NKP Bundle management** - Auto-detects existing bundles, downloads if needed, extracts binaries
+- ✅ **Prism Central version compatibility checks** - Prevents incompatible deployments before they start
+- ✅ **Comprehensive input validation** - Validates IP ranges, cluster names, and subnet alignment
+- ✅ **Network connectivity verification** - Ensures outbound access to Nutanix portal
+- ✅ **Pre-flight summary review** - Shows all parameters and requires explicit confirmation
 
-This installation method gives less control on the cluster configuration. For example, the NKP cluster will be created with three control plane nodes and four worker nodes.
+**Use this method if:**
+- You want a guided, hands-off deployment experience
+- This is your first NKP deployment
+- You want automatic compatibility validation to prevent mid-deployment failures
+- You prefer interactive prompts over manual configuration files
 
-We recommend starting a tmux session in case your ssh connection is at risk of disconnection (like laptop going into sleep mode) as the process can take some time based on several paramters (like download speed).
+**Steps:**
+
+1. Navigate to your cloned repository and make the script executable:
+    ```shell
+    cd nkp-quickstart
+    chmod +x nkpDeploy.sh
+    ```
+ 
+2. Run the script:
+    ```shell
+    ./nkpDeploy.sh
+    ```
+
+3. The script will verify prerequisites and then prompt for the following information:
+
+    | Parameter | Description | Example |
+    |-----------|-------------|---------|
+    | **Prism Central Endpoint** | IP address of Prism Central | `10.0.0.10` |
+    | **Prism Username** | Your Prism Central username | `admin` |
+    | **Prism Password** | Your Prism Central password | *(masked input)* |
+    | **Cluster Name** | Desired NKP cluster name (lowercase) | `prod-cluster` |
+    | **Control Plane VIP** | Static IP for control plane (outside IPAM) | `10.0.0.50` |
+    | **VM Image Name** | NKP Rocky image name in Prism Central | `nkp-rocky-9.6-release-cis-1.34.1...qcow2` |
+    | **AHV Cluster Name** | Name of the AHV cluster | `PHX-Cluster-1` |
+    | **Network Name** | Network for cluster nodes | `Management` |
+    | **Storage Container** | Storage container for persistent volumes | `SelfServiceContainer` |
+    | **LB IP Range** | Load balancer IP range | `10.0.0.100-10.0.0.110` |
+    | **Control Plane Replicas** | Number of control plane nodes (1-5, default: 3) | `3` |
+    | **Worker Replicas** | Number of worker nodes (1-10, default: 2) | `2` |
+
+4. Review the final deployment summary and confirm to proceed.
+
+5. The deployment typically takes 45-60 minutes. Once complete, configure your kubeconfig:
+
+    ```shell
+    export KUBECONFIG=$(pwd)/<cluster_name>.conf
+    nkp get dashboard
+    ```
+
+    This will display the Kommander dashboard URL and login credentials.
+
+#### What the Script Does:
+
+- **Dependency Check:** Verifies `curl`, `jq`, and `tar` are installed
+- **System Prerequisites:** Checks/configures cgroup v2 delegation (may require reboot)
+- **Connectivity Check:** Verifies outbound access to Nutanix portal
+- **Bundle Management:** Looks for existing bundle, prompts for download URL if needed, extracts binaries
+- **Binary Installation:** Installs `nkp` and `kubectl` to `/usr/local/bin`
+- **Configurable Sizing:** Allows custom control plane and worker replica counts (optional, has defaults)
+- **Version Validation:** Queries Prism Central API to confirm PC and AOS versions > 7.3
+- **Input Validation:** Ensures all parameters are correctly formatted and compatible
+- **Deployment:** Executes the `nkp create cluster` command with validated parameters and custom sizing
+
+---
+
+### Prompt-based Installation
+
+This installation method provides an interactive deployment experience with less control over cluster configuration. The NKP cluster will be created with three control plane nodes and four worker nodes (default sizing).
+
+**Use this method if:**
+- You want a quick proof-of-concept deployment
+- Default cluster sizing works for your use case
+- You prefer interactive prompts over pre-configuration
+
+We recommend starting a tmux session in case your ssh connection is at risk of disconnection (like laptop going into sleep mode) as the process can take some time based on several parameters (like download speed).
 
 ```shell
 nkp create cluster nutanix
 ```
 
-### CLI installation
+---
+
+### CLI Installation
 
 This installation method lets you fully customize your cluster configuration. The following commands create a cluster with one control plane node and three worker nodes.
 
+**Use this method if:**
+- You need non-standard cluster sizing
+- You want to fine-tune every cluster parameter
+- You're deploying multiple cluster variations
+- You need full control and repeatability via configuration files
+
 1. Before running the following command in your jump host VM, update the values with your environment: [nkp-env](./nkp-env)
 
-1. The next command will start the installation process of an NKP management cluster: [nkp-create-cluster](./nkp-create-mgmt-cluster.sh)
+2. The next command will start the installation process of an NKP management cluster: [nkp-create-cluster](./nkp-create-mgmt-cluster.sh)
+
+---
+
+## Comparison: Which Method Should I Use?
+
+| Factor | Scripted | Prompt-Based | CLI |
+|--------|----------|--------------|-----|
+| **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
+| **Customization** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **Version Validation** | Automatic | Manual | Manual |
+| **Input Validation** | Comprehensive | Basic | None |
+| **Time to Deploy** | 5-10 min setup | 10-15 min setup | Variable |
+| **Best For** | New users, POCs | Quick tests | Advanced/Production |
+| **Typical Use Case** | First deployment | Learning | Automation |
+
+---
 
 ## Support and Disclaimer
 
