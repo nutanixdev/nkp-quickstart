@@ -130,18 +130,13 @@ This method guides you through the entire deployment process interactively with 
 
 **Steps:**
 
-1. Navigate to your cloned repository and make the script executable:
+1. Navigate to your cloned repository and run the script to begin:
     ```shell
     cd nkp-quickstart
-    chmod +x nkpDeploy.sh
-    ```
- 
-2. Run the script:
-    ```shell
     ./nkpDeploy.sh
     ```
 
-3. The script will verify prerequisites and then prompt for the following information:
+2. The script will verify prerequisites and then prompt for the following information:
 
     | Parameter | Description | Example |
     |-----------|-------------|---------|
@@ -158,10 +153,11 @@ This method guides you through the entire deployment process interactively with 
     | **Control Plane Replicas** | Number of control plane nodes (1-5, default: 1) | `1` |
     | **Worker Replicas** | Number of worker nodes (1-10, default: 3) | `3` |
 
-4. Review the final deployment summary and confirm to proceed.
+3. Review the final deployment summary and confirm to proceed.
 
 <IMG src="./images/finaldeploymentsummary.png" atl="Final Deployment Summary" />
-6. The deployment typically takes 45-60 minutes. Once complete, configure your kubeconfig:
+
+4. The deployment typically takes 45-60 minutes. Once complete, configure your kubeconfig:
 
     ```shell
     export KUBECONFIG=$(pwd)/<cluster_name>.conf
