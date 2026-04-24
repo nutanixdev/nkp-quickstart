@@ -155,8 +155,8 @@ This method guides you through the entire deployment process interactively with 
     | **Network Name** | Network for cluster nodes | `Management` |
     | **Storage Container** | Storage container for persistent volumes | `SelfServiceContainer` |
     | **LB IP Range** | Load balancer IP range | `10.0.0.100-10.0.0.110` |
-    | **Control Plane Replicas** | Number of control plane nodes (1-5, default: 3) | `3` |
-    | **Worker Replicas** | Number of worker nodes (1-10, default: 2) | `2` |
+    | **Control Plane Replicas** | Number of control plane nodes (1-5, default: 1) | `1` |
+    | **Worker Replicas** | Number of worker nodes (1-10, default: 3) | `3` |
 
 4. Review the final deployment summary and confirm to proceed.
 
