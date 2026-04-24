@@ -108,6 +108,7 @@ Before creating a cluster, ensure you meet the prerequisites:
 - One or more IP addresses for the NKP dashboard and load-balancing service (must be outside of IPAM scope)
 - IP addresses must be in the same subnet as the virtual machines
 - Access to the Nutanix Support Portal to download the NKP Bundle
+<IMG src="./images/bundle.png" atl="NKP Bundle" />
 
 Choose one of the following installation methods based on your needs:
 
