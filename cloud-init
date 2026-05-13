@@ -1,6 +1,9 @@
 #cloud-config
 fqdn: nkp-quickstart
-ssh_pwauth: true
+
+# DO NOT use ssh_pwauth: true — on this CIS image cloud-init writes
+# PasswordAuthentication no into 50-cloud-init.conf, inverting intent.
+
 users:
 - name: nutanix
   primary_group: nutanix
@@ -8,18 +11,48 @@ users:
   sudo: ['ALL=(ALL) NOPASSWD:ALL']
   lock_passwd: false
   plain_text_passwd: nutanix/4u
+
+write_files:
+  # Overwrite sshd_config entirely — the CIS image ships it as a single
+  # line (PasswordAuthentication no) with no Include directive, so
+  # sshd_config.d/ drop-ins are never read. Directives go BEFORE the
+  # Include so they win (sshd first-match-wins rule).
+  - path: /etc/ssh/sshd_config
+    owner: root:root
+    permissions: '0600'
+    content: |
+      PasswordAuthentication yes
+      UsePAM yes
+      Include /etc/ssh/sshd_config.d/*.conf
+
 bootcmd:
 - mkdir -p /etc/docker
+
 runcmd:
-- mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
-- dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-- dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin git tmux
-- systemctl --now enable docker
-- usermod -aG docker nutanix
-- 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
-- chmod +x ./kubectl
-- mv ./kubectl /usr/local/bin/kubectl
-- 'curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
-- eject
-- 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
+  # Swap out the NKP authselect profile for the standard sssd one
+  - authselect select sssd with-faillock --force
+
+  # Ensure nullok is present in PAM (idempotent)
+  - sed -i '/pam_unix.so/{ /nullok/! s/$/ nullok/ }' /etc/pam.d/password-auth /etc/pam.d/system-auth
+
+  # Fix shadow ownership and permissions (CIS image ships it as 744 root:root)
+  - chown root:shadow /etc/shadow
+  - chmod 000 /etc/shadow
+
+  # Validate sshd config and reload
+  - sshd -t && systemctl restart sshd
+
+  # Original runcmd contents below, unchanged
+  - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
+  - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+  - dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin git tmux
+  - systemctl --now enable docker
+  - usermod -aG docker nutanix
+  - 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
+  - chmod +x ./kubectl
+  - mv ./kubectl /usr/local/bin/kubectl
+  - 'curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+  - eject
+  - 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
+
 final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: /home/nutanix/nkp-quickstart/scripts/get-nkp-cli.sh"
