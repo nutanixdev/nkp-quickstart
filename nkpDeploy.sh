@@ -366,7 +366,7 @@ echo -e "${CYAN}Installing nkp and kubectl to /usr/local/bin...${NC}"
 
 if sudo cp "./$TARGET_DIR/cli/nkp" /usr/local/bin/nkp && \
    sudo cp "./$TARGET_DIR/kubectl" /usr/local/bin/kubectl && \
-   sudo chmod +x /usr/local/bin/nkp /usr/local/bin/kubectl; then
+   sudo chmod 755 /usr/local/bin/nkp /usr/local/bin/kubectl; then
     if [[ -x "/usr/local/bin/nkp" ]] && [[ -x "/usr/local/bin/kubectl" ]]; then
         echo -e "${GREEN}--> Binaries installed successfully.${NC}"
     else
