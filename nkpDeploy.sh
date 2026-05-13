@@ -19,12 +19,227 @@ for cmd in "${REQUIRED_COMMANDS[@]}"; do
 done
 echo -e "${GREEN}--> All required dependencies verified.${NC}"
 
-echo -e "${CYAN}Performing Pre-flight checks...${NC}"
+# --- Defaults file sits next to the script ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULTS_FILE="${SCRIPT_DIR}/nkpDeploy_defaults.json"
 
-# 1. SYSTEM-WIDE CGROUP DELEGATION (for podman)
+# ============================================================
+# HELPER: Inline v4 API call
+# Requires PCIPADDRESS, PCADMIN, PCPASSWD to be set before calling.
+# ============================================================
+call_curl_v4() {
+    local REQUEST="$1"   # GET or POST
+    local APIURL="$2"    # e.g. /clustermgmt/v4.0/config/clusters
+    local CALLDATA="$3"  # JSON body (POST only)
+    local URL="https://${PCIPADDRESS}:9440/api"
+
+    case "$REQUEST" in
+        GET)
+            RESPONSE=$(curl -s -k -w '####%{response_code}' \
+                -u "$PCADMIN:$PCPASSWD" \
+                --header 'accept: application/json' \
+                -H 'X-Nutanix-Client-Type: ui' \
+                --request GET \
+                --url "${URL}${APIURL}")
+            ;;
+        POST)
+            RESPONSE=$(curl -s -k -w '####%{response_code}' \
+                -u "$PCADMIN:$PCPASSWD" \
+                --header 'accept: application/json' \
+                -H 'X-Nutanix-Client-Type: ui' \
+                --request POST \
+                --header 'content-type: application/json' \
+                --data "${CALLDATA}" \
+                --url "${URL}${APIURL}")
+            ;;
+    esac
+
+    local HTTPSTATUS
+    HTTPSTATUS=$(echo "${RESPONSE}" | awk -F '####' '{print $2}' | xargs)
+    case "$HTTPSTATUS" in
+        2[0-9][0-9])
+            echo "${RESPONSE}" | awk -F '####' '{print $1}'
+            ;;
+        *)
+            echo "{\"httpStatus\": \"${HTTPSTATUS}\"}"
+            ;;
+    esac
+}
+
+# ============================================================
+# HELPER: Load defaults from JSON (returns empty string if key missing)
+# ============================================================
+get_default() {
+    local KEY="$1"
+    if [[ -f "$DEFAULTS_FILE" ]]; then
+        jq -r --arg k "$KEY" '.[$k] // empty' "$DEFAULTS_FILE" 2>/dev/null
+    fi
+}
+
+# ============================================================
+# HELPER: Save all current inputs to defaults JSON (no password)
+# ============================================================
+save_defaults() {
+    jq -n \
+        --arg pc_endpoint     "$PC_ENDPOINT" \
+        --arg nutanix_user    "$NUTANIX_USER" \
+        --arg cluster_name    "$CLUSTER_NAME" \
+        --arg vip             "$VIP" \
+        --arg vm_image        "$VM_IMAGE" \
+        --arg ahv_cluster     "$AHV_CLUSTER" \
+        --arg network         "$NETWORK" \
+        --arg storage         "$STORAGE" \
+        --arg lb_range        "$LB_RANGE" \
+        --arg cp_replicas     "$CP_REPLICAS" \
+        --arg worker_replicas "$WORKER_REPLICAS" \
+        '{
+            pc_endpoint:     $pc_endpoint,
+            nutanix_user:    $nutanix_user,
+            cluster_name:    $cluster_name,
+            vip:             $vip,
+            vm_image:        $vm_image,
+            ahv_cluster:     $ahv_cluster,
+            network:         $network,
+            storage:         $storage,
+            lb_range:        $lb_range,
+            cp_replicas:     $cp_replicas,
+            worker_replicas: $worker_replicas
+        }' > "$DEFAULTS_FILE"
+}
+
+# ============================================================
+# HELPER: Prompt with optional default value shown inline
+#   get_input "Prompt: " VAR_NAME [mode]
+#   mode: "lowercase", "range", or omit for plain text
+# ============================================================
+get_input() {
+    local PROMPT="$1"
+    local VAR_NAME="$2"
+    local MODE="$3"
+    local DEFAULT
+    DEFAULT=$(get_default "${VAR_NAME,,}")
+
+    local DISPLAY_PROMPT
+    if [[ -n "$DEFAULT" ]]; then
+        DISPLAY_PROMPT="${PROMPT%:*} [${DEFAULT}]: "
+    else
+        DISPLAY_PROMPT="$PROMPT"
+    fi
+
+    local TEMP_VAL=""
+
+    while true; do
+        read -p "$DISPLAY_PROMPT" TEMP_VAL
+
+        # Accept default if Enter pressed on empty input
+        if [[ -z "$TEMP_VAL" && -n "$DEFAULT" ]]; then
+            TEMP_VAL="$DEFAULT"
+        fi
+
+        if [[ -z "$TEMP_VAL" ]]; then
+            echo -e "${RED}Error: This field cannot be empty.${NC}"
+            continue
+        fi
+
+        if [[ "$MODE" == "lowercase" && "$TEMP_VAL" =~ [A-Z] ]]; then
+            echo -e "${RED}Error: Cluster Name must be lowercase only.${NC}"
+            continue
+        fi
+
+        if [[ "$MODE" == "range" ]]; then
+            if [[ ! "$TEMP_VAL" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}-([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+                echo -e "${RED}Error: Format must be x.x.x.x-y.y.y.y${NC}"
+                continue
+            fi
+            local RANGE_START
+            RANGE_START=$(echo "$TEMP_VAL" | cut -d'-' -f1)
+            if ! is_in_same_subnet "$VIP" "$RANGE_START"; then
+                echo -e "${RED}Error: LB Range must be in the same subnet as VIP ($VIP).${NC}"
+                continue
+            fi
+        fi
+
+        eval "$VAR_NAME=\"$TEMP_VAL\""
+        break
+    done
+}
+
+# ============================================================
+# HELPER: subnet check
+# ============================================================
+is_in_same_subnet() {
+    local ip1=$1
+    local ip2=$2
+    # Masks to the first 3 octets (255.255.255.0)
+    # This is typical for NKP deployments; modify if your network uses different CIDR
+    [[ "${ip1%.*}" == "${ip2%.*}" ]]
+}
+
+# ============================================================
+# HELPER: version comparison
+# ============================================================
+version_gt() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
+
+# ============================================================
+# HELPER: ip2int (kept for potential future use)
+# ============================================================
+ip2int() {
+    local a b c d
+    IFS=. read -r a b c d <<< "$1"
+    echo "$(( (a << 24) + (b << 16) + (c << 8) + d ))"
+}
+
+# ============================================================
+# HELPER: Validate VM image against PC — called from summary loop
+# Sets VM_IMAGE_VALID=true/false
+# ============================================================
+validate_vm_image() {
+    local IMAGE_NAME="$1"
+    local RESULTS
+    RESULTS=$(call_curl_v4 "GET" "/vmm/v4.0/content/images?\$filter=contains(name,'${IMAGE_NAME}')")
+    local EXACT_MATCH
+    EXACT_MATCH=$(echo "$RESULTS" | jq -r --arg NAME "$IMAGE_NAME" '.data[]? | select(.name == $NAME) | .name' 2>/dev/null)
+
+    if [[ -n "$EXACT_MATCH" ]]; then
+        VM_IMAGE_VALID=true
+        return
+    fi
+
+    VM_IMAGE_VALID=false
+    local FUZZY_LIST
+    FUZZY_LIST=$(echo "$RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
+
+    echo ""
+    echo -e "${RED}  Image '${IMAGE_NAME}' not found on Prism Central.${NC}"
+
+    if [[ -n "$FUZZY_LIST" ]]; then
+        echo -e "${YELLOW}  Similar images found:${NC}"
+        while IFS= read -r IMG; do
+            echo -e "    ${CYAN}${IMG}${NC}"
+        done <<< "$FUZZY_LIST"
+    else
+        echo -e "${YELLOW}  No similar images found. Fetching full image list...${NC}"
+        local ALL_RESULTS
+        ALL_RESULTS=$(call_curl_v4 "GET" "/vmm/v4.0/content/images")
+        local ALL_IMAGES
+        ALL_IMAGES=$(echo "$ALL_RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
+        if [[ -n "$ALL_IMAGES" ]]; then
+            while IFS= read -r IMG; do
+                echo -e "    ${CYAN}${IMG}${NC}"
+            done <<< "$ALL_IMAGES"
+        else
+            echo -e "${RED}  Could not retrieve image list from Prism Central.${NC}"
+        fi
+    fi
+    echo ""
+}
+
+# ============================================================
+# PREFLIGHT 1: CONTAINER RUNTIME & CGROUP DELEGATION
+# ============================================================
+echo -e "${CYAN}Performing Pre-flight checks...${NC}"
 echo -e "${CYAN}Checking container runtime and cgroup configuration...${NC}"
 
-# Detect container runtime
 CONTAINER_RUNTIME="unknown"
 if command -v podman &> /dev/null; then
     CONTAINER_RUNTIME="podman"
@@ -55,8 +270,7 @@ if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
         exit 1
     fi
 
-    # VERIFY IF ACTIVE
-    if ! systemctl show user@$(id -u).service --property=Delegate | grep -q "Delegate=yes"; then
+    if ! systemctl show "user@$(id -u).service" --property=Delegate | grep -q "Delegate=yes"; then
         echo -e "${RED}=======================================================${NC}"
         echo -e "${RED}ERROR: Cgroup delegation is configured but NOT ACTIVE.${NC}"
         echo -e "${YELLOW}A reboot is required to activate these kernel permissions.${NC}"
@@ -69,7 +283,9 @@ elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
     echo -e "${GREEN}--> Docker daemon detected (cgroup delegation not required).${NC}"
 fi
 
-# 2. NETWORK CONNECTIVITY CHECK
+# ============================================================
+# PREFLIGHT 2: NETWORK CONNECTIVITY CHECK
+# ============================================================
 echo -e "${YELLOW}Checking outbound connectivity to Nutanix portal...${NC}"
 if ! curl -s --connect-timeout 5 --max-time 10 https://portal.nutanix.com >/dev/null 2>&1; then
     echo -e "${RED}ERROR: Cannot reach Nutanix portal (https://portal.nutanix.com).${NC}"
@@ -82,21 +298,49 @@ if ! curl -s --connect-timeout 5 --max-time 10 https://portal.nutanix.com >/dev/
 fi
 echo -e "${GREEN}--> Outbound connectivity verified.${NC}"
 
-# 3. FIND OR DOWNLOAD BUNDLE
+# ============================================================
+# ============================================================
+# PREFLIGHT 3: FIND OR DOWNLOAD BUNDLE
+# ============================================================
+
+# Check for airgap bundle mistakenly placed in the directory
+if ls nkp-air-gapped-bundle_v*.tar.gz &>/dev/null; then
+    echo -e "${RED}ERROR: Found an NKP Air-Gapped Bundle in the current directory.${NC}"
+    echo -e "${YELLOW}This script requires the standard NKP Bundle, not the Air-Gapped Bundle.${NC}"
+    echo -e "  ${RED}Wrong:${NC}  nkp-air-gapped-bundle_v*.tar.gz"
+    echo -e "  ${GREEN}Correct:${NC} nkp-bundle_v*.tar.gz"
+    echo -e "${YELLOW}Please download the correct bundle from:${NC}"
+    echo -e "  https://portal.nutanix.com/page/downloads?product=nkp"
+    exit 1
+fi
+
 BUNDLE_FILE=$(ls nkp-bundle_v*.tar.gz 2>/dev/null | head -n 1)
 if [ -z "$BUNDLE_FILE" ]; then
     echo -e "${YELLOW}NKP Bundle not found in current directory.${NC}"
     echo -e "${YELLOW}Open browser to: ${NC}"
     echo -e "${YELLOW}https://portal.nutanix.com/page/downloads?product=nkp${NC}"
-    echo -e "${YELLOW}Find and download the NKP Bundle.${NC}"
-    echo -ne "${CYAN}Please paste the full Nutanix Download URL: ${NC}"
-    read -r RAW_URL
-    [[ -z "$RAW_URL" ]] && exit 1
-    BUNDLE_FILE=$(basename "${RAW_URL%%\?*}")
-    curl -kL -o "$BUNDLE_FILE" "$RAW_URL"
+    echo -e "${YELLOW}Find and download the standard ${GREEN}NKP Bundle${YELLOW} (NOT the Air-Gapped Bundle).${NC}"
+    while true; do
+        echo -ne "${CYAN}Please paste the full Nutanix Download URL: ${NC}"
+        read -r RAW_URL
+        [[ -z "$RAW_URL" ]] && exit 1
+        BUNDLE_FILE=$(basename "${RAW_URL%%?*}")
+        if [[ "$BUNDLE_FILE" == *"air-gapped"* ]]; then
+            echo -e "${RED}ERROR: That URL points to the Air-Gapped Bundle.${NC}"
+            echo -e "${YELLOW}Please go back to the portal and copy the URL for the standard NKP Bundle.${NC}"
+            echo -e "  ${RED}Wrong:${NC}  nkp-air-gapped-bundle_v*.tar.gz"
+            echo -e "  ${GREEN}Correct:${NC} nkp-bundle_v*.tar.gz"
+            BUNDLE_FILE=""
+            continue
+        fi
+        curl -kL -o "$BUNDLE_FILE" "$RAW_URL"
+        break
+    done
 fi
 
-# 4. VERSION & EXTRACTION
+# ============================================================
+# PREFLIGHT 4: VERSION & EXTRACTION
+# ============================================================
 VERSION_WITH_V=$(echo "$BUNDLE_FILE" | sed -E 's/.*bundle_(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/')
 TARGET_DIR="${BUNDLE_FILE%.tar.gz}"
 
@@ -104,7 +348,7 @@ if [[ ! -d "$TARGET_DIR" ]]; then
     echo -e "${CYAN}Extracting $BUNDLE_FILE into ./$TARGET_DIR...${NC}"
     mkdir -p "$TARGET_DIR"
     tar -axf "$BUNDLE_FILE" -C "$TARGET_DIR" --strip-components=1
-    
+
     # Validate expected structure exists
     if [[ ! -f "$TARGET_DIR/cli/nkp" ]] || [[ ! -f "$TARGET_DIR/kubectl" ]]; then
         echo -e "${RED}ERROR: Expected binaries not found in extracted bundle.${NC}"
@@ -115,16 +359,14 @@ if [[ ! -d "$TARGET_DIR" ]]; then
     fi
 fi
 
-# 5. INSTALL BINARIES TO /usr/local/bin
+# ============================================================
+# PREFLIGHT 5: INSTALL BINARIES TO /usr/local/bin
+# ============================================================
 echo -e "${CYAN}Installing nkp and kubectl to /usr/local/bin...${NC}"
 
-# 1. Attempt the copy and chmod
-# We use '&&' to ensure chmod only runs if the copy worked
 if sudo cp "./$TARGET_DIR/cli/nkp" /usr/local/bin/nkp && \
    sudo cp "./$TARGET_DIR/kubectl" /usr/local/bin/kubectl && \
    sudo chmod +x /usr/local/bin/nkp /usr/local/bin/kubectl; then
-    
-    # 2. Final Verification: Check if the files actually exist and are executable
     if [[ -x "/usr/local/bin/nkp" ]] && [[ -x "/usr/local/bin/kubectl" ]]; then
         echo -e "${GREEN}--> Binaries installed successfully.${NC}"
     else
@@ -141,123 +383,95 @@ KOMMANDER_BUNDLE="./$TARGET_DIR/container-images/kommander-image-bundle-${VERSIO
 KONVOY_BUNDLE="./$TARGET_DIR/container-images/konvoy-image-bundle-${VERSION_WITH_V}.tar"
 BUNDLE_FLAGS="--bundle ${KOMMANDER_BUNDLE},${KONVOY_BUNDLE}"
 
-# Helper: Convert IP to a number for comparison
-ip2int() {
-    local a b c d
-    IFS=. read -r a b c d <<< "$1"
-    echo "$(( (a << 24) + (b << 16) + (c << 8) + d ))"
-}
-
-# Helper: Check if an IP is in the same /24 subnet (Common for NKP)
-# If you use different CIDRs, let me know!
-is_in_same_subnet() {
-    local ip1=$1
-    local ip2=$2
-    # Masks to the first 3 octets (255.255.255.0)
-    # This is typical for NKP deployments; modify if your network uses different CIDR
-    [[ "${ip1%.*}" == "${ip2%.*}" ]]
-}
-
-get_input() {
-    local prompt=$1
-    local var_name=$2
-    local mode=$3 # "lowercase", "ip", or "range"
-    local temp_val=""
-
-    while true; do
-        read -p "$prompt" temp_val
-        
-        # 1. Check if empty
-        if [[ -z "$temp_val" ]]; then
-            echo -e "${RED}Error: This field cannot be empty.${NC}"
-            continue
-        fi
-
-        # 2. Lowercase Validation
-        if [[ "$mode" == "lowercase" ]] && [[ "$temp_val" =~ [A-Z] ]]; then
-            echo -e "${RED}Error: Cluster Name must be lowercase only.${NC}"
-            continue
-        fi
-
-        # 3. IP Range & Subnet Validation
-        if [[ "$mode" == "range" ]]; then
-            # Regex for x.x.x.x-y.y.y.y
-            if [[ ! "$temp_val" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}-([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-                echo -e "${RED}Error: Format must be x.x.x.x-y.y.y.y${NC}"
-                continue
-            fi
-
-            # Extract start IP of the range
-            local range_start=$(echo "$temp_val" | cut -d'-' -f1)
-            if ! is_in_same_subnet "$VIP" "$range_start"; then
-                echo -e "${RED}Error: LB Range must be in the same subnet as VIP ($VIP).${NC}"
-                continue
-            fi
-        fi
-
-        eval "$var_name=\"$temp_val\""
-        break
-    done
-}
-
-# 6. USER INPUTS
+# ============================================================
+# USER INPUTS
+# ============================================================
 echo -e "${YELLOW}=======================================================${NC}"
 echo -e "${CYAN}      NKP Version Detected: ${GREEN}${VERSION_WITH_V}${NC}"
+if [[ -f "$DEFAULTS_FILE" ]]; then
+    echo -e "${CYAN}      Defaults loaded from: ${GREEN}${DEFAULTS_FILE}${NC}"
+fi
 echo -e "${YELLOW}=======================================================${NC}"
 
-get_input "Prism Central Endpoint (IP): " PC_ENDPOINT
-get_input "Prism Username: " NUTANIX_USER
+get_input "Prism Central Endpoint (IP): "       PC_ENDPOINT
+get_input "Prism Username: "                     NUTANIX_USER
 
-# Password loop
+# Password — never stored, no default shown
 while [[ -z "$NUTANIX_PASSWORD" ]]; do
     echo -ne "${YELLOW}Prism Password: ${NC}"
-    read -s NUTANIX_PASSWORD
-    echo -e "\n"
+    read -rs NUTANIX_PASSWORD
+    echo ""
 done
 
 get_input "NKP Cluster Name (lowercase only): " CLUSTER_NAME "lowercase"
-get_input "Control Plane VIP: " VIP
-get_input "VM Image Name (.qcow2): " VM_IMAGE
-get_input "AHV Cluster Name: " AHV_CLUSTER
-get_input "Network Name: " NETWORK
-get_input "Storage Container: " STORAGE
+get_input "Control Plane VIP: "                  VIP
+get_input "VM Image Name (.qcow2): "             VM_IMAGE
+get_input "AHV Cluster Name: "                   AHV_CLUSTER
+get_input "Network Name: "                       NETWORK
+get_input "Storage Container: "                  STORAGE
+get_input "LB IP Range (x.x.x.x-y.y.y.y): "    LB_RANGE "range"
 
-# This will now validate format AND subnet alignment with $VIP
-get_input "LB IP Range (x.x.x.x-y.y.y.y): " LB_RANGE "range"
-
-# 6A. OPTIONAL: DEPLOYMENT SIZING
+# OPTIONAL: DEPLOYMENT SIZING
 echo -e "${YELLOW}=======================================================${NC}"
 echo -e "${CYAN}      OPTIONAL: Deployment Sizing${NC}"
 echo -e "${YELLOW}(Press Enter to use defaults)${NC}"
 echo -e "${YELLOW}=======================================================${NC}"
 
-# Control plane replicas with validation (must be odd: 1, 3, or 5 for quorum)
+# Control plane replicas — default from saved or fall back to 1
+CP_REPLICAS_DEFAULT=$(get_default "cp_replicas")
+CP_REPLICAS_DEFAULT=${CP_REPLICAS_DEFAULT:-1}
 while true; do
-    read -p "Control Plane Replicas (1, 3, or 5 - default: 1): " CP_REPLICAS
-    CP_REPLICAS=${CP_REPLICAS:-1}
+    read -p "Control Plane Replicas (1, 3, or 5 - default: ${CP_REPLICAS_DEFAULT}): " CP_REPLICAS
+    CP_REPLICAS=${CP_REPLICAS:-$CP_REPLICAS_DEFAULT}
     if [[ "$CP_REPLICAS" =~ ^[135]$ ]]; then
         break
     fi
     echo -e "${RED}Error: Control plane replicas must be an odd number (1, 3, or 5) for proper quorum.${NC}"
 done
- 
-# Worker replicas with validation
+
+# Worker replicas — default from saved or fall back to 3
+WORKER_REPLICAS_DEFAULT=$(get_default "worker_replicas")
+WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-3}
 while true; do
-    read -p "Worker Replicas (1-10, default: 3): " WORKER_REPLICAS
-    WORKER_REPLICAS=${WORKER_REPLICAS:-3}
+    read -p "Worker Replicas (1-10, default: ${WORKER_REPLICAS_DEFAULT}): " WORKER_REPLICAS
+    WORKER_REPLICAS=${WORKER_REPLICAS:-$WORKER_REPLICAS_DEFAULT}
     if [[ "$WORKER_REPLICAS" =~ ^([1-9]|10)$ ]]; then
         break
     fi
     echo -e "${RED}Error: Must be a number between 1 and 10.${NC}"
 done
 
-# 7 --- Version Validation ---
+# ============================================================
+# SAVE DEFAULTS — written immediately after inputs, before any API calls
+# ============================================================
+save_defaults
+echo -e "${GREEN}--> Inputs saved to ${DEFAULTS_FILE}${NC}"
+
+# Set v4 API credentials from collected inputs
+PCIPADDRESS="$PC_ENDPOINT"
+PCADMIN="$NUTANIX_USER"
+PCPASSWD="$NUTANIX_PASSWORD"
+
+# ============================================================
+# VERSION VALIDATION (v4 API)
+# ============================================================
 echo -e "${YELLOW}Validating Prism Central and AOS versions...${NC}"
 
-# A. Fetch Prism Central version and strip "pc." prefix
-PC_RESPONSE=$(curl -s -k -u "$NUTANIX_USER:$NUTANIX_PASSWORD" "https://${PC_ENDPOINT}:9440/api/nutanix/v2.0/cluster" 2>&1)
-PC_RAW=$(echo "$PC_RESPONSE" | jq -r '.version // empty' 2>/dev/null)
-PC_VERSION=${PC_RAW#pc.}
+# A. PC version — select the PRISM_CENTRAL entity from cluster list
+PC_V4_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters")
+# Extract short version (e.g. "7.5") for comparison
+PC_VERSION=$(echo "$PC_V4_RESPONSE" | jq -r '
+    .data[]?
+    | select(.config.clusterFunction != null)
+    | select(.config.clusterFunction[] == "PRISM_CENTRAL")
+    | .config.buildInfo.version
+    // empty' 2>/dev/null | head -n1)
+PC_RAW=$(echo "$PC_V4_RESPONSE" | jq -r '
+    .data[]?
+    | select(.config.clusterFunction != null)
+    | select(.config.clusterFunction[] == "PRISM_CENTRAL")
+    | .config.buildInfo.version
+    // empty' 2>/dev/null | head -n1)
 
 if [[ -z "$PC_VERSION" ]]; then
     echo -e "${RED}ERROR: Failed to retrieve Prism Central version.${NC}"
@@ -266,42 +480,23 @@ if [[ -z "$PC_VERSION" ]]; then
     echo -e "  2. Invalid credentials (check username/password)"
     echo -e "  3. Network connectivity to Prism Central (port 9440)"
     echo -e "  4. Prism Central is not responding"
-    echo -e "${YELLOW}To debug, test connectivity: ${CYAN}curl -k https://${PC_ENDPOINT}:9440/api/nutanix/v2.0/cluster${NC}"
+    echo -e "${YELLOW}To debug, test connectivity: ${CYAN}curl -k https://${PC_ENDPOINT}:9440/api/clustermgmt/v4.0/config/clusters${NC}"
     exit 1
 fi
 
-# B. Find UUID for the specific AHV cluster name provided by user
-CLUSTER_RESPONSE=$(curl -s -k -u "$NUTANIX_USER:$NUTANIX_PASSWORD" -X POST \
-  "https://${PC_ENDPOINT}:9440/api/nutanix/v3/clusters/list" \
-  -H "Content-Type: application/json" \
-  -d '{"kind": "cluster"}' 2>&1)
-
-C_UUID=$(echo "$CLUSTER_RESPONSE" | jq -r --arg NAME "$AHV_CLUSTER" \
-  '.entities[] | select(.status.name == $NAME) | .metadata.uuid // empty' 2>/dev/null)
-
-if [[ -z "$C_UUID" ]]; then
-    echo -e "${RED}ERROR: Could not find AHV Cluster named: ${CYAN}${AHV_CLUSTER}${NC}"
-    echo -e "${YELLOW}Available clusters in Prism Central:${NC}"
-    echo "$CLUSTER_RESPONSE" | jq -r '.entities[].status.name // empty' 2>/dev/null | sed 's/^/  - /' || echo "  (unable to list clusters)"
-    exit 1
-fi
-
-# C. Fetch AOS version using the discovered UUID
-AOS_RESPONSE=$(curl -s -k -u "$NUTANIX_USER:$NUTANIX_PASSWORD" -X GET \
-  "https://${PC_ENDPOINT}:9440/api/nutanix/v3/clusters/$C_UUID" 2>&1)
-
-AOS_VERSION=$(echo "$AOS_RESPONSE" | jq -r '.status.resources.config.software_map.NOS.version // empty' 2>/dev/null)
+# B. Find the AHV cluster by name and get its AOS version
+AHV_CLUSTER_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters?\$filter=contains(name,'${AHV_CLUSTER}')")
+AOS_VERSION=$(echo "$AHV_CLUSTER_RESPONSE" | jq -r \
+    --arg NAME "$AHV_CLUSTER" \
+    '.data[]? | select(.name == $NAME) | .config.buildInfo.version // empty' \
+    2>/dev/null | head -n1)
 
 if [[ -z "$AOS_VERSION" ]]; then
-    echo -e "${RED}ERROR: Failed to retrieve AOS version for cluster: ${CYAN}${AHV_CLUSTER}${NC}"
-    echo -e "${YELLOW}Cluster UUID: $C_UUID${NC}"
-    echo -e "${YELLOW}This may indicate a permissions issue or cluster connectivity problem.${NC}"
+    echo -e "${RED}ERROR: Could not find AHV Cluster named: ${CYAN}${AHV_CLUSTER}${NC}"
+    echo -e "${YELLOW}Available clusters in Prism Central:${NC}"
+    echo "$AHV_CLUSTER_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sed 's/^/  - /' || echo "  (unable to list clusters)"
     exit 1
 fi
-
-# D Compare versions (Must be > 7.3)
-# Returns 0 if $1 > $2
-version_gt() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
 
 if ! version_gt "$PC_VERSION" "7.3" || ! version_gt "$AOS_VERSION" "7.3"; then
     echo -e "${RED}ERROR: Installation halted. Incompatible versions detected.${NC}"
@@ -314,36 +509,73 @@ fi
 
 echo -e "${GREEN}--> Version validation passed.${NC}"
 
-# 8. FINAL DEPLOYMENT SUMMARY 
-clear
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${YELLOW}           FINAL DEPLOYMENT SUMMARY                    ${NC}"
-echo -e "${YELLOW}=======================================================${NC}"
-printf "${CYAN}%-25s${NC} : %s\n" "NKP Version" "$VERSION_WITH_V"
-printf "${CYAN}%-25s${NC} : %s\n" "Prism Central Version" "$PC_RAW"
-printf "${CYAN}%-25s${NC} : %s\n" "AOS Version" "$AOS_VERSION"
-printf "${CYAN}%-25s${NC} : %s\n" "Cluster Name" "$CLUSTER_NAME"
-printf "${CYAN}%-25s${NC} : %s\n" "PC Endpoint" "$PC_ENDPOINT"
-printf "${CYAN}%-25s${NC} : %s\n" "Control Plane VIP" "$VIP"
-printf "${CYAN}%-25s${NC} : %s\n" "VM Image Name" "$VM_IMAGE"
-printf "${CYAN}%-25s${NC} : %s\n" "AHV Cluster Name" "$AHV_CLUSTER"
-printf "${CYAN}%-25s${NC} : %s\n" "AHV Network Name" "$NETWORK"
-printf "${CYAN}%-25s${NC} : %s\n" "Storage Container" "$STORAGE"
-printf "${CYAN}%-25s${NC} : %s\n" "Load Balancer Range" "$LB_RANGE"
-printf "${CYAN}%-25s${NC} : %s\n" "Control Plane Replicas" "$CP_REPLICAS"
-printf "${CYAN}%-25s${NC} : %s\n" "Worker Replicas" "$WORKER_REPLICAS"
-echo -e "${YELLOW}=======================================================${NC}"
+# ============================================================
+# SUMMARY LOOP — includes image validation
+# ============================================================
+VM_IMAGE_VALID=false
 
-read -p "Proceed with deployment? (y/n) > " CONFIRM
-[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
+while true; do
+    clear
+    echo -e "${YELLOW}=======================================================${NC}"
+    echo -e "${YELLOW}           FINAL DEPLOYMENT SUMMARY                    ${NC}"
+    echo -e "${YELLOW}=======================================================${NC}"
+    printf "${CYAN}%-25s${NC} : %s\n" "NKP Version"           "$VERSION_WITH_V"
+    printf "${CYAN}%-25s${NC} : %s\n" "Prism Central Version"  "$PC_RAW"
+    printf "${CYAN}%-25s${NC} : %s\n" "AOS Version"            "$AOS_VERSION"
+    printf "${CYAN}%-25s${NC} : %s\n" "Cluster Name"           "$CLUSTER_NAME"
+    printf "${CYAN}%-25s${NC} : %s\n" "PC Endpoint"            "$PC_ENDPOINT"
+    printf "${CYAN}%-25s${NC} : %s\n" "Control Plane VIP"      "$VIP"
+    printf "${CYAN}%-25s${NC} : %s\n" "VM Image Name"          "$VM_IMAGE"
+    printf "${CYAN}%-25s${NC} : %s\n" "AHV Cluster Name"       "$AHV_CLUSTER"
+    printf "${CYAN}%-25s${NC} : %s\n" "AHV Network Name"       "$NETWORK"
+    printf "${CYAN}%-25s${NC} : %s\n" "Storage Container"      "$STORAGE"
+    printf "${CYAN}%-25s${NC} : %s\n" "Load Balancer Range"    "$LB_RANGE"
+    printf "${CYAN}%-25s${NC} : %s\n" "Pod CIDR"               "100.64.0.0/14"
+    printf "${CYAN}%-25s${NC} : %s\n" "Service CIDR"           "100.68.0.0/16"
+    printf "${CYAN}%-25s${NC} : %s\n" "Control Plane Replicas" "$CP_REPLICAS"
+    printf "${CYAN}%-25s${NC} : %s\n" "Worker Replicas"        "$WORKER_REPLICAS"
+    echo -e "${YELLOW}=======================================================${NC}"
 
-# 9. DEPLOYMENT
+    # Validate image — show result inline in summary
+    echo -ne "${CYAN}Validating VM image against Prism Central...${NC} "
+    validate_vm_image "$VM_IMAGE"
+
+    if [[ "$VM_IMAGE_VALID" == true ]]; then
+        echo -e "${GREEN}  ✔  Image '${VM_IMAGE}' found on Prism Central.${NC}"
+        echo ""
+        read -p "Proceed with deployment? (y/n) > " CONFIRM
+        [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
+        break
+    else
+        # validate_vm_image already printed the candidate list
+        read -p "Enter correct VM Image Name: " NEW_IMAGE
+        if [[ -n "$NEW_IMAGE" ]]; then
+            VM_IMAGE="$NEW_IMAGE"
+            save_defaults
+        fi
+    fi
+done
+
+# ============================================================
+# SSH KEY SETUP
+# ============================================================
+echo -e "${CYAN}Setting up SSH key...${NC}"
+if [[ ! -f ~/.ssh/id_rsa ]]; then
+    echo -e "${YELLOW}--> No SSH key found. Generating RSA 4096 key...${NC}"
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+    ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
+    echo -e "${GREEN}--> SSH key generated: ~/.ssh/id_rsa${NC}"
+fi
+export SSH_PUBLIC_KEY_FILE=~/.ssh/id_rsa.pub
+echo -e "${GREEN}--> SSH_PUBLIC_KEY_FILE set to: ${SSH_PUBLIC_KEY_FILE}${NC}"
+
+# ============================================================
+# DEPLOYMENT
+# ============================================================
 export NUTANIX_USER
 export NUTANIX_PASSWORD
 export NUTANIX_ENDPOINT="https://${PC_ENDPOINT}:9440"
-
-# Determine script execution directory for kubeconfig
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}.conf"
 
 echo -e "${YELLOW}=======================================================${NC}"
@@ -358,20 +590,35 @@ echo -e "${YELLOW}=======================================================${NC}"
 echo -e "${GREEN}Starting Deployment...${NC}"
 nkp create cluster nutanix \
   $BUNDLE_FLAGS \
-  --cluster-name "${CLUSTER_NAME}" \
-  --endpoint "${NUTANIX_ENDPOINT}" \
+  --cluster-name                              "${CLUSTER_NAME}" \
+  --endpoint                                  "${NUTANIX_ENDPOINT}" \
   --insecure \
-  --control-plane-prism-element-cluster "${AHV_CLUSTER}" \
-  --worker-prism-element-cluster "${AHV_CLUSTER}" \
-  --control-plane-subnets "${NETWORK}" \
-  --worker-subnets "${NETWORK}" \
-  --vm-image "${VM_IMAGE}" \
-  --control-plane-endpoint-ip "${VIP}" \
-  --csi-storage-container "${STORAGE}" \
+  --control-plane-prism-element-cluster       "${AHV_CLUSTER}" \
+  --worker-prism-element-cluster              "${AHV_CLUSTER}" \
+  --control-plane-subnets                     "${NETWORK}" \
+  --worker-subnets                            "${NETWORK}" \
+  --vm-image                                  "${VM_IMAGE}" \
+  --control-plane-endpoint-ip                 "${VIP}" \
+  --csi-storage-container                     "${STORAGE}" \
   --kubernetes-service-load-balancer-ip-range "${LB_RANGE}" \
-  --control-plane-replicas "$CP_REPLICAS" \
-  --worker-replicas "$WORKER_REPLICAS" \
+  --kubernetes-pod-network-cidr               "100.64.0.0/14" \
+  --kubernetes-service-cidr                   "100.68.0.0/16" \
+  --control-plane-replicas                    "$CP_REPLICAS" \
+  --worker-replicas                           "$WORKER_REPLICAS" \
+  --ssh-username                              "nutanix" \
+  --ssh-public-key-file                       "${SSH_PUBLIC_KEY_FILE}" \
   --self-managed
+NKP_EXIT=$?
 
-echo -e "${GREEN}Deployment finished.${NC}"
-echo -e "${CYAN}Access your cluster with: export KUBECONFIG=${KUBECONFIG}${NC}"
+if [[ $NKP_EXIT -eq 0 ]]; then
+    echo -e "${GREEN}Deployment finished successfully.${NC}"
+    echo -e "${CYAN}Access your cluster with:${NC}"
+    echo -e "  export KUBECONFIG=${KUBECONFIG}"
+else
+    echo -e "${RED}=======================================================${NC}"
+    echo -e "${RED}ERROR: Deployment failed (exit code ${NKP_EXIT}).${NC}"
+    echo -e "${YELLOW}Your inputs have been saved to: ${DEFAULTS_FILE}${NC}"
+    echo -e "${YELLOW}Re-run nkpDeploy.sh to retry with the same defaults.${NC}"
+    echo -e "${RED}=======================================================${NC}"
+    exit 1
+fi
