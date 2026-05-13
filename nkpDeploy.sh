@@ -324,7 +324,7 @@ if [ -z "$BUNDLE_FILE" ]; then
         echo -ne "${CYAN}Please paste the full Nutanix Download URL: ${NC}"
         read -r RAW_URL
         [[ -z "$RAW_URL" ]] && exit 1
-        BUNDLE_FILE=$(basename "${RAW_URL%%?*}")
+        BUNDLE_FILE=$(basename "${RAW_URL%%\?*}")
         if [[ "$BUNDLE_FILE" == *"air-gapped"* ]]; then
             echo -e "${RED}ERROR: That URL points to the Air-Gapped Bundle.${NC}"
             echo -e "${YELLOW}Please go back to the portal and copy the URL for the standard NKP Bundle.${NC}"
