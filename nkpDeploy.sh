@@ -299,7 +299,6 @@ fi
 echo -e "${GREEN}--> Outbound connectivity verified.${NC}"
 
 # ============================================================
-# ============================================================
 # PREFLIGHT 3: FIND OR DOWNLOAD BUNDLE
 # ============================================================
 
@@ -382,6 +381,9 @@ fi
 KOMMANDER_BUNDLE="./$TARGET_DIR/container-images/kommander-image-bundle-${VERSION_WITH_V}.tar"
 KONVOY_BUNDLE="./$TARGET_DIR/container-images/konvoy-image-bundle-${VERSION_WITH_V}.tar"
 BUNDLE_FLAGS="--bundle ${KOMMANDER_BUNDLE},${KONVOY_BUNDLE}"
+
+# Resolve bootstrap image path using the same VERSION_WITH_V regex-derived value
+BOOTSTRAP_IMAGE="./$TARGET_DIR/konvoy-bootstrap-image-${VERSION_WITH_V}.tar"
 
 # ============================================================
 # USER INPUTS
@@ -569,6 +571,39 @@ if [[ ! -f ~/.ssh/id_rsa ]]; then
 fi
 export SSH_PUBLIC_KEY_FILE=~/.ssh/id_rsa.pub
 echo -e "${GREEN}--> SSH_PUBLIC_KEY_FILE set to: ${SSH_PUBLIC_KEY_FILE}${NC}"
+
+# ============================================================
+# PREFLIGHT 6: LOAD KONVOY BOOTSTRAP IMAGE
+# ============================================================
+echo -e "${CYAN}Loading Konvoy bootstrap image...${NC}"
+
+if [[ ! -f "$BOOTSTRAP_IMAGE" ]]; then
+    echo -e "${RED}ERROR: Bootstrap image not found: ${BOOTSTRAP_IMAGE}${NC}"
+    echo -e "${YELLOW}Expected path: ${BOOTSTRAP_IMAGE}${NC}"
+    echo -e "${YELLOW}Available .tar files in bundle directory:${NC}"
+    ls "./$TARGET_DIR"/*.tar 2>/dev/null | sed 's/^/  /' || echo "  (no .tar files found)"
+    exit 1
+fi
+
+echo -e "${CYAN}--> Loading: $(basename "$BOOTSTRAP_IMAGE")${NC}"
+if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
+    podman load -i "$BOOTSTRAP_IMAGE"
+    LOAD_EXIT=$?
+elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
+    docker load -i "$BOOTSTRAP_IMAGE"
+    LOAD_EXIT=$?
+else
+    echo -e "${RED}ERROR: No container runtime available to load bootstrap image.${NC}"
+    echo -e "${YELLOW}Install podman or docker before running this script.${NC}"
+    exit 1
+fi
+
+if [[ $LOAD_EXIT -ne 0 ]]; then
+    echo -e "${RED}ERROR: Failed to load bootstrap image (exit code ${LOAD_EXIT}).${NC}"
+    echo -e "${YELLOW}Verify the .tar file is not corrupted and that ${CONTAINER_RUNTIME} is functioning correctly.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}--> Konvoy bootstrap image loaded successfully.${NC}"
 
 # ============================================================
 # DEPLOYMENT
