@@ -589,6 +589,22 @@ echo -e "${CYAN}--> Loading: $(basename "$BOOTSTRAP_IMAGE")${NC}"
 if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
     podman load -i "$BOOTSTRAP_IMAGE"
     LOAD_EXIT=$?
+    if [[ $LOAD_EXIT -ne 0 ]]; then
+        echo -e "${RED}ERROR: Failed to load bootstrap image (exit code ${LOAD_EXIT}).${NC}"
+        echo -e "${YELLOW}Verify the .tar file is not corrupted and that ${CONTAINER_RUNTIME} is functioning correctly.${NC}"
+        exit 1
+    fi
+    # Podman does not automatically resolve the docker.io registry prefix;
+    # nkp references the image as docker.io/mesosphere/konvoy-bootstrap:vVERSION
+    BOOTSTRAP_TAG="docker.io/mesosphere/konvoy-bootstrap:${VERSION_WITH_V}"
+    echo -e "${CYAN}--> Tagging bootstrap image for Podman: ${BOOTSTRAP_TAG}${NC}"
+    podman image tag "konvoy-bootstrap:${VERSION_WITH_V}" "$BOOTSTRAP_TAG"
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}ERROR: Failed to tag bootstrap image as ${BOOTSTRAP_TAG}.${NC}"
+        echo -e "${YELLOW}Verify the image loaded correctly with: podman images | grep konvoy-bootstrap${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}--> Bootstrap image tagged successfully.${NC}"
 elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
     docker load -i "$BOOTSTRAP_IMAGE"
     LOAD_EXIT=$?
