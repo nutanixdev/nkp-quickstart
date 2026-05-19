@@ -346,7 +346,7 @@ TARGET_DIR="${BUNDLE_FILE%.tar.gz}"
 if [[ ! -d "$TARGET_DIR" ]]; then
     echo -e "${CYAN}Extracting $BUNDLE_FILE into ./$TARGET_DIR...${NC}"
     mkdir -p "$TARGET_DIR"
-    tar -axf "$BUNDLE_FILE" -C "$TARGET_DIR" --strip-components=1
+    tar -xzvpf "$BUNDLE_FILE" -C "$TARGET_DIR" --strip-components=1
 
     # Validate expected structure exists
     if [[ ! -f "$TARGET_DIR/cli/nkp" ]] || [[ ! -f "$TARGET_DIR/kubectl" ]]; then
