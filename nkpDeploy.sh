@@ -410,8 +410,8 @@ get_input "Control Plane VIP: "                  VIP
 get_input "VM Image Name (.qcow2): "             VM_IMAGE
 get_input "AHV Cluster Name: "                   AHV_CLUSTER
 get_input "Network Name: "                       NETWORK
-get_input "Storage Container: "                  STORAGE
-get_input "LB IP Range (x.x.x.x-y.y.y.y): "    LB_RANGE "range"
+get_input "Storage Container: "                  STORAGE "" "SelfServiceContainer"
+get_input "LB IP Range (x.x.x.x-y.y.y.y): "      LB_RANGE "range"
 
 # OPTIONAL: DEPLOYMENT SIZING
 echo -e "${YELLOW}=======================================================${NC}"
