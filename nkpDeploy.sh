@@ -658,6 +658,8 @@ nkp create cluster nutanix \
   --worker-replicas                           "$WORKER_REPLICAS" \
   --ssh-username                              "nutanix" \
   --ssh-public-key-file                       "${SSH_PUBLIC_KEY_FILE}" \
+  --timeout                                          "60m0s" \
+  --self-managed
   --self-managed
 NKP_EXIT=$?
 
