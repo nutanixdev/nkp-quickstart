@@ -356,6 +356,8 @@ if [[ ! -d "$TARGET_DIR" ]]; then
         find "$TARGET_DIR" -type f \( -name "nkp" -o -name "kubectl" \) 2>/dev/null | sed 's/^/  /' || echo "  (no matching files found)"
         exit 1
     fi
+    echo -e "${CYAN}Removing tarball $BUNDLE_FILE...${NC}"
+    rm -f "$BUNDLE_FILE"
 fi
 
 # ============================================================
