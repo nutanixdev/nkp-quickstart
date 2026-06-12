@@ -419,6 +419,14 @@ echo -e "${CYAN}      OPTIONAL: Deployment Sizing${NC}"
 echo -e "${YELLOW}(Press Enter to use defaults)${NC}"
 echo -e "${YELLOW}=======================================================${NC}"
 
+# License tier — affects default worker count
+read -p "Do you plan to license NKP Pro/Ultimate? (y/N): " NKP_LICENSED
+if [[ "$NKP_LICENSED" =~ ^[Yy]$ ]]; then
+    LICENSE_DEFAULT=4
+else
+    LICENSE_DEFAULT=2
+fi
+
 # Control plane replicas — default from saved or fall back to 1
 CP_REPLICAS_DEFAULT=$(get_default "cp_replicas")
 CP_REPLICAS_DEFAULT=${CP_REPLICAS_DEFAULT:-1}
@@ -431,9 +439,9 @@ while true; do
     echo -e "${RED}Error: Control plane replicas must be an odd number (1, 3, or 5) for proper quorum.${NC}"
 done
 
-# Worker replicas — default from saved or fall back to 3
+# Worker replicas — default from saved, else from licensing answer
 WORKER_REPLICAS_DEFAULT=$(get_default "worker_replicas")
-WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-3}
+WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-$LICENSE_DEFAULT}
 while true; do
     read -p "Worker Replicas (1-10, default: ${WORKER_REPLICAS_DEFAULT}): " WORKER_REPLICAS
     WORKER_REPLICAS=${WORKER_REPLICAS:-$WORKER_REPLICAS_DEFAULT}
