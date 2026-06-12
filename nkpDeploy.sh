@@ -542,11 +542,11 @@ while true; do
     echo -ne "${CYAN}Validating VM image against Prism Central...${NC} "
     validate_vm_image "$VM_IMAGE"
 
-    if [[ "$VM_IMAGE_VALID" == true ]]; then
+if [[ "$VM_IMAGE_VALID" == true ]]; then
         echo -e "${GREEN}  ✔  Image '${VM_IMAGE}' found on Prism Central.${NC}"
         echo ""
-        read -p "Proceed with deployment? (y/n) > " CONFIRM
-        [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
+        read -p "Proceed with deployment? (Y/n) > " CONFIRM
+        [[ "$CONFIRM" =~ ^[Nn]$ ]] && exit 0
         break
     else
         # validate_vm_image already printed the candidate list
