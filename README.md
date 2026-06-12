@@ -93,7 +93,7 @@ For NKP cluster creation:
 3. Install the NKP CLI with the command: [get-nkp-cli](./get-nkp-cli)
 
     ```shell
-    ./get-nkp-cli
+    cd nkp-quickstart && ./get-nkp-cli
     ```
 
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
