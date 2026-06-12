@@ -131,9 +131,8 @@ This method guides you through the entire deployment process interactively with 
 
 **Steps:**
 
-1. Navigate to your cloned repository and run the script to begin:
+1. From your cloned repository run the script to begin:
     ```shell
-    cd nkp-quickstart
     ./nkpDeploy.sh
     ```
 
