@@ -1,9 +1,6 @@
 #cloud-config
 fqdn: nkp-quickstart
-
-# DO NOT use ssh_pwauth: true — on this CIS image cloud-init writes
-# PasswordAuthentication no into 50-cloud-init.conf, inverting intent.
-
+ssh_pwauth: true
 users:
 - name: nutanix
   primary_group: nutanix
@@ -21,27 +18,12 @@ write_files:
     owner: root:root
     permissions: '0600'
     content: |
-      PasswordAuthentication yes
-      UsePAM yes
       Include /etc/ssh/sshd_config.d/*.conf
 
 bootcmd:
 - mkdir -p /etc/docker
 
 runcmd:
-  # Swap out the NKP authselect profile for the standard sssd one
-  - authselect select sssd with-faillock --force
-
-  # Ensure nullok is present in PAM (idempotent)
-  - sed -i '/pam_unix.so/{ /nullok/! s/$/ nullok/ }' /etc/pam.d/password-auth /etc/pam.d/system-auth
-
-  # Fix shadow ownership and permissions (CIS image ships it as 744 root:root)
-  - chown root:shadow /etc/shadow
-  - chmod 000 /etc/shadow
-
-  # Validate sshd config and reload
-  - sshd -t && systemctl restart sshd
-
   # Original runcmd contents below, unchanged
   - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
   - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
