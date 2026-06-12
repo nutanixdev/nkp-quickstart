@@ -45,7 +45,7 @@ Ip ranges are provided as example.
 For NKP CLI:
 
 - Internet connectivity
-- Add NKP Node OS Image to Prism Central. **DO NOT CHANGE** the auto-populated image name
+- Add NKP Node OS Image Rocky Linux to Prism Central. **DO NOT CHANGE** the auto-populated image name
 
     <details>
     <summary>click to view example</summary>
