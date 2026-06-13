@@ -2,24 +2,38 @@
 fqdn: nkp-quickstart
 ssh_pwauth: true
 users:
-- name: nutanix
-  primary_group: nutanix
-  groups: nutanix, docker, wheel
-  sudo: ['ALL=(ALL) NOPASSWD:ALL']
-  lock_passwd: false
-  plain_text_passwd: nutanix/4u
+  - name: nutanix
+    primary_group: nutanix
+    groups: nutanix, docker, wheel
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    lock_passwd: false
+    plain_text_passwd: nutanix/4u
+
+write_files:
+  # Overwrite sshd_config entirely — the CIS image ships it as a single
+  # line (PasswordAuthentication no) with no Include directive, so
+  # sshd_config.d/ drop-ins are never read. Directives go BEFORE the
+  # Include so they win (sshd first-match-wins rule).
+  - path: /etc/ssh/sshd_config
+    owner: root:root
+    permissions: "0600"
+    content: |
+      Include /etc/ssh/sshd_config.d/*.conf
+
 bootcmd:
-- mkdir -p /etc/docker
+  - mkdir -p /etc/docker
+
 runcmd:
-- mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
-- dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-- dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin git tmux
-- systemctl --now enable docker
-- usermod -aG docker nutanix
-- 'curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl'
-- chmod +x ./kubectl
-- mv ./kubectl /usr/local/bin/kubectl
-- 'curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
-- eject
-- 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
+  - mv /etc/yum.repos.d/nutanix_rocky9.repo /etc/yum.repos.d/nutanix_rocky9.repo.disabled
+  - dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+  - dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin git tmux
+  - systemctl --now enable docker
+  - usermod -aG docker nutanix
+  - "curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl"
+  - chmod +x ./kubectl
+  - mv ./kubectl /usr/local/bin/kubectl
+  - "curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash"
+  - eject
+  - 'wall "If you are seeing this message, please reconnect your SSH session. Otherwise, the NKP CLI installation process may fail."'
+
 final_message: "The machine is ready after $UPTIME seconds. Go ahead and install the NKP CLI using: /home/nutanix/nkp-quickstart/scripts/get-nkp-cli.sh"
