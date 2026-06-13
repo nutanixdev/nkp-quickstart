@@ -51,7 +51,7 @@ For NKP CLI:
 
 For NKP cluster creation:
 
-- The target cluster must be running **AOS 7.3** and **Prism Central (PC) 7.3** or newer.
+- The target cluster must be running **AOS 7.3** and **Prism Central (PC) 7.3** or newer. [Check the Nutanix support portal to align NKP, AOS, and PC versions.](https://portal.nutanix.com/page/compatibility-interoperability-matrix/nkp/interoperability)
 - **DHCP/IPAM** is required
 - IP Addresses (must be reachable to jump host)
   - Static IP address for the control plane VIP
