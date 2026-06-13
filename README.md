@@ -47,10 +47,7 @@ For NKP CLI:
 - Internet connectivity
 - Add NKP Node OS Image Rocky Linux to Prism Central. **DO NOT CHANGE** the auto-populated image name
 
-    <details>
-    <summary>click to view example</summary>
     ![Add NKP Rocky OS image](./images/add_nkp_rocky_os_image.png)
-    </details>
 
 For NKP cluster creation:
 
