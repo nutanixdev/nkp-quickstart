@@ -1,13 +1,15 @@
+# nkp-env: Environment variables for NKP CLI installation
+
 export CLUSTER_NAME=nkp-starter                                 # NKP cluster name. When using NKP Pro/Ultimate, this name is used to generate the license key
 export CLUSTER_HOSTNAME=nkp-starter.localhost                   # Hostname for the cluster - this needs to be configured in your DNS server based on first ip in LB_IP_RANGE
-export NUTANIX_USER=nkp-admin                                # Prism Central username for nkp clusterapi integration - avoid admin if possible
+export NUTANIX_USER=nkp-admin                                   # Prism Central username for nkp clusterapi integration - avoid admin if possible
 export NUTANIX_PASSWORD='supersecretpassword'                   # Keep the password enclosed between single quotes - Ex: 'password'
 export NUTANIX_ENDPOINT=10.38.207.7                             # Prism Central IP address or FQDN without https://
 export NUTANIX_PORT=9440                                        # Prism Central port (default: 9440)
 export LB_IP_RANGE=10.38.141.51-10.38.141.52                    # Load balancer IP pool - Ex: 10.42.236.204-10.42.236.204
 export CONTROL_PLANE_ENDPOINT_IP=10.38.207.50                   # Kubernetes VIP. Must be in the same subnet as the VMs - Ex: 10.42.236.203
-export CONTROL_PLANE_REPLICAS=3                                  # Number of control plane VMs - Ex: 3
-export WORKER_NODES_REPLICAS=4                                   # Number of worker VMs - Ex: 4
+export CONTROL_PLANE_REPLICAS=3                                 # Number of control plane VMs - Ex: 3
+export WORKER_NODES_REPLICAS=4                                  # Number of worker VMs - Ex: 4
 export NUTANIX_MACHINE_TEMPLATE_IMAGE_NAME=nkp-rocky-9.5-release-cis-1.32.3-20250430150550.qcow2 # Update with the NKP Rocky image name
 export NUTANIX_PRISM_ELEMENT_CLUSTER_NAME=PHX-POC207            # Prism Element cluster name - Ex: PHX-POC207
 export NUTANIX_SUBNET_NAME=secondary                            # Prism Element Subnet on which to deploy the kubernetes cluster
@@ -15,10 +17,14 @@ export NUTANIX_STORAGE_CONTAINER_NAME=SelfServiceContainer      # Change to your
 export REGISTRY_MIRROR_URL=registry-1.docker.io                 # Required on Nutanix HPOC or internet connected deployments to avoid docker rate limiting
 export REGISTRY_MIRROR_USERNAME=                                # Required on internet connected deployments to avoid docker rate limiting
 export REGISTRY_MIRROR_PASSWORD=                                # Required on internet connected deployments to avoid docker rate limiting
-#export REGISTRY_URL=registry-1.docker.io                        # Optional, used to pull images from a private registry
-#export REGISTRY_USERNAME=                                       # Optional, used to pull images from a private registry
-#export REGISTRY_PASSWORD=                                       # Optional, used to pull images from a private registry
 export CSI_HYPERVISOR_ATTACHED=true                             # Optional, used to enable hypervisor attached volumes for the cluster
-export SSH_PUBLIC_KEY_FILE=~/.ssh/id_rsa.pub                   # Optional, used to add your public key to the cluster VMs for SSH access
+export SSH_PUBLIC_KEY_FILE=~/.ssh/id_rsa.pub                    # Optional, used to add your public key to the cluster VMs for SSH access
 export CP_CATEGORIES=                # Optional, used to add categories to the control plane resources in Prism Central "key1=value1,key2=value2"
 export WORKER_CATEGORIES=             # Optional, used to add categories to the worker resources in Prism Central "key1=value1,key2=value2"
+# export REGISTRY_URL=registry-1.docker.io                        # Optional, used to pull images from a private registry
+# export REGISTRY_USERNAME=                                       # Optional, used to pull images from a private registry
+# export REGISTRY_PASSWORD=                                       # Optional, used to pull images from a private registry
+
+# Optional, used to provide local NKP bundle images when air-gapped or with limited internet access. Provide the path to the tar files separated by comma if providing both konvoy and kommander bundles.
+# You must untar the bundle downloaded from Nutanix support portal (tar -xzpvf bundle.tar.gz) and provide the path to the resulting tar files in the container-images directory
+# export NKP_BUNDLE=./nkp-v2.17.1/container-images/kommander-image-bundle-v2.17.1.tar,./nkp-v2.17.1/container-images/konvoy-image-bundle-v2.17.1.tar

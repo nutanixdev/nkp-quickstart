@@ -24,7 +24,7 @@ Steps to install all the required CLIs (nkp, kubectl and helm) to create and man
 
 4. [Install NKP CLI](#install-nkp-cli)
 
-5. [Create NKP Cluster on Nutanix](#optional-create-nkp-cluster-on-nutanix)
+5. [Create NKP Cluster on Nutanix](#create-nkp-cluster-on-nutanix)
    - [Scripted Automated Deployment](#scripted-automated-deployment-recommended)
    - [Prompt-based Installation](#prompt-based-installation)
    - [CLI Installation](#cli-installation)
@@ -49,7 +49,7 @@ For NKP CLI:
 
     <details>
     <summary>click to view example</summary>
-    <IMG src="./images/add_nkp_rocky_os_image.png" atl="Add NKP Rocky OS image" />
+    ![Add NKP Rocky OS image](./images/add_nkp_rocky_os_image.png)
     </details>
 
 For NKP cluster creation:
@@ -97,8 +97,8 @@ For NKP cluster creation:
     ```
 
     When prompted, you must use the download link as-is, which is available in the Nutanix portal.
- <img width="1232" height="93" alt="image" src="https://github.com/user-attachments/assets/9bcad1ee-d1ab-47a5-b252-9012a3736cf0" />
-  
+
+    ![NKP CLI downloadable link](./images/nkp_cli_link.png)
 
 ## Create NKP cluster on Nutanix
 
@@ -108,9 +108,14 @@ Before creating a cluster, ensure you meet the prerequisites:
 - One or more IP addresses for the NKP dashboard and load-balancing service (must be outside of IPAM scope)
 - IP addresses must be in the same subnet as the virtual machines
 - Access to the Nutanix Support Portal to download the NKP Bundle
-<IMG src="./images/bundle.png" atl="NKP Bundle" />
+
+![NKP Bundle](./images/bundle.png)
 
 Choose one of the following installation methods based on your needs:
+
+- [Scripted Automated Deployment](#scripted-automated-deployment-recommended)
+- [Prompt-based Installation](#prompt-based-installation)
+- [CLI Installation](#cli-installation)
 
 ### Scripted Automated Deployment (Recommended)
 
@@ -124,6 +129,7 @@ This method guides you through the entire deployment process interactively with 
 - ✅ **Pre-flight summary review** - Shows all parameters and requires explicit confirmation
 
 **Use this method if:**
+
 - You want a guided, hands-off deployment experience
 - This is your first NKP deployment
 - You want automatic compatibility validation to prevent mid-deployment failures
@@ -132,6 +138,7 @@ This method guides you through the entire deployment process interactively with 
 **Steps:**
 
 1. From your cloned repository run the script to begin:
+
     ```shell
     ./nkpDeploy.sh
     ```
@@ -139,7 +146,7 @@ This method guides you through the entire deployment process interactively with 
 2. The script will verify prerequisites and then prompt for the following information:
 
     | Parameter | Description | Example |
-    |-----------|-------------|---------|
+    | --------- | ----------- | ------- |
     | **Prism Central Endpoint** | IP address of Prism Central | `10.0.0.10` |
     | **Prism Username** | Your Prism Central username | `admin` |
     | **Prism Password** | Your Prism Central password | *(masked input)* |
@@ -155,7 +162,7 @@ This method guides you through the entire deployment process interactively with 
 
 3. Review the final deployment summary and confirm to proceed.
 
-<IMG src="./images/finaldeploymentsummary.png" atl="Final Deployment Summary" />
+    ![Final Deployment Summary](./images/finaldeploymentsummary.png)
 
 4. The deployment typically takes 45-60 minutes. Once complete, configure your kubeconfig:
 
@@ -166,7 +173,7 @@ This method guides you through the entire deployment process interactively with 
 
     This will display the Kommander dashboard URL and login credentials.
 
-#### What the Script Does:
+#### What the Script Does
 
 - **Dependency Check:** Verifies `curl`, `jq`, and `tar` are installed
 - **System Prerequisites:** Checks/configures cgroup v2 delegation (may require reboot)
@@ -185,6 +192,7 @@ This method guides you through the entire deployment process interactively with 
 This installation method provides an interactive deployment experience with less control over cluster configuration. The NKP cluster will be created with three control plane nodes and four worker nodes (default sizing).
 
 **Use this method if:**
+
 - You want a quick proof-of-concept deployment
 - Default cluster sizing works for your use case
 - You prefer interactive prompts over pre-configuration
@@ -202,6 +210,7 @@ nkp create cluster nutanix
 This installation method lets you fully customize your cluster configuration. The following commands create a cluster with one control plane node and three worker nodes.
 
 **Use this method if:**
+
 - You need non-standard cluster sizing
 - You want to fine-tune every cluster parameter
 - You're deploying multiple cluster variations
@@ -216,7 +225,7 @@ This installation method lets you fully customize your cluster configuration. Th
 ## Comparison: Which Method Should I Use?
 
 | Factor | Scripted | Prompt-Based | CLI |
-|--------|----------|--------------|-----|
+| ------ | -------- | ------------ | --- |
 | **Ease of Use** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
 | **Customization** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ |
 | **Version Validation** | Automatic | Manual | Manual |
