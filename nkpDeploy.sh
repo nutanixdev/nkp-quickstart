@@ -670,7 +670,6 @@ nkp create cluster nutanix \
   --ssh-public-key-file                       "${SSH_PUBLIC_KEY_FILE}" \
   --timeout                                          "60m0s" \
   --self-managed
-  --self-managed
 NKP_EXIT=$?
 
 if [[ $NKP_EXIT -eq 0 ]]; then
