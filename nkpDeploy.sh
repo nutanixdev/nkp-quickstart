@@ -312,8 +312,8 @@ if ls nkp-air-gapped-bundle_v*.tar.gz &>/dev/null; then
     echo -e "  https://portal.nutanix.com/page/downloads?product=nkp"
     exit 1
 fi
-
-BUNDLE_FILE=$(ls nkp-bundle_v*.tar.gz 2>/dev/null | head -n 1)
+BUNDLE_FILE=$(ls -d nkp-bundle_v*/ 2>/dev/null | head -n1 | tr -d '/') && BUNDLE_FILE="${BUNDLE_FILE}.tar.gz" || \
+BUNDLE_FILE=$(ls nkp-bundle_v*.tar.gz 2>/dev/null | head -n1)
 if [ -z "$BUNDLE_FILE" ]; then
     echo -e "${YELLOW}NKP Bundle not found in current directory.${NC}"
     echo -e "${YELLOW}Open browser to: ${NC}"
