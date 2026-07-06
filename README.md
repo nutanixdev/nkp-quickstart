@@ -116,6 +116,8 @@ Choose one of the following installation methods based on your needs:
 
 ### Scripted Automated Deployment (Recommended)
 
+#### NEW: See how it works! - https://nutanix.storylane.io/share/nkp-quickstart
+
 This method guides you through the entire deployment process interactively with automatic validation and error checking. It's ideal for first-time users and provides:
 
 - ✅ **Automated system prerequisite validation** - Checks and configures cgroup v2 delegation automatically
