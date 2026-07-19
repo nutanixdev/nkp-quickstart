@@ -64,7 +64,7 @@ For NKP cluster creation:
 2. Create a virtual machine
 
     - Name: nkp-jump host
-    - vCPUs: 2
+    - vCPUs: 4
     - Memory: 8
     - Disk: Clone from Image (select the Rocky Linux you previously uploaded)
     - Disk Capacity: 128 (default is 20)
