@@ -7,18 +7,28 @@ PURPLE='\033[38;5;141m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+TUI_ALT_SCREEN_ACTIVE=0
 
-# --- Dependency Check ---
-echo -e "${CYAN}Verifying required dependencies...${NC}"
-REQUIRED_COMMANDS=("curl" "jq" "tar")
-for cmd in "${REQUIRED_COMMANDS[@]}"; do
-    if ! command -v "$cmd" &> /dev/null; then
-        echo -e "${RED}ERROR: Required command '$cmd' is not installed.${NC}"
-        echo -e "${YELLOW}Install on Rocky Linux with: ${CYAN}sudo yum install -y $cmd${NC}"
-        exit 1
+tui_enter_screen() {
+    if [[ "$TUI_ALT_SCREEN_ACTIVE" != 1 ]]; then
+        printf '\033[?1049h' >&2
+        TUI_ALT_SCREEN_ACTIVE=1
     fi
-done
-echo -e "${GREEN}--> All required dependencies verified.${NC}"
+}
+
+tui_restore_terminal() {
+    if [[ -c /dev/tty ]]; then
+        stty echo icanon < /dev/tty 2>/dev/null || true
+    fi
+    if [[ "$TUI_ALT_SCREEN_ACTIVE" == 1 ]]; then
+        printf '\033[?7h\033[?25h\033[0m\033[?1049l' >&2
+        TUI_ALT_SCREEN_ACTIVE=0
+    else
+        printf '\033[?7h\033[?25h\033[0m' >&2
+    fi
+}
+
+trap tui_restore_terminal EXIT
 
 # --- Defaults file sits next to the script ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -238,14 +248,25 @@ frame_row() {
     printf '%b│%b%-*s%b│%b\n' "$PURPLE" "$RESET" "$SCREEN_INNER" "$TEXT" "$PURPLE" "$RESET" >&2
 }
 
+frame_row_color() {
+    local COLOR="$1"
+    local TEXT="$2"
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
+    printf '%b│%b%b%-*s%b%b│%b\n' \
+        "$PURPLE" "$RESET" "$COLOR" "$SCREEN_INNER" "$TEXT" "$RESET" "$PURPLE" "$RESET" >&2
+}
+
 frame_header() {
     local LABEL="$1"
     local PURPLE='\033[38;5;141m'
-    local WHITE='\033[97m'
     local RESET='\033[0m'
-    printf '\033[2J\033[H' >&2
+    # 3J clears terminal scrollback so each screen starts as a clean app view.
+    tui_enter_screen
+    printf '\033[?7l\033[3J\033[2J\033[H' >&2
     printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
-    frame_row "  NKP DEPLOYMENT"
+    frame_row_color "$PURPLE" "  NKP DEPLOYMENT"
     frame_row "  $LABEL"
     printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
 }
@@ -253,9 +274,10 @@ frame_header() {
 frame_prompt_header() {
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
-    printf '\033[2J\033[H' >&2
+    tui_enter_screen
+    printf '\033[?7l\033[3J\033[2J\033[H' >&2
     printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
-    frame_row "  NKP DEPLOYMENT"
+    frame_row_color "$PURPLE" "  NKP DEPLOYMENT"
     printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
 }
 
@@ -265,7 +287,7 @@ frame_footer() {
     local RESET='\033[0m'
     printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
     frame_row "  Controls: $CONTROLS"
-    printf '%b╰%s╯%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    printf '%b╰%s╯%b\033[?7h\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
 }
 
 show_progress() {
@@ -410,7 +432,7 @@ show_message() {
         while IFS= read -r MESSAGE_LINE; do
             frame_row "  $MESSAGE_LINE"
             MESSAGE_LINES=$((MESSAGE_LINES + 1))
-        done <<< "$MESSAGE"
+        done <<< "$(printf '%b' "$MESSAGE")"
         local CONTENT_ROWS=$((SCREEN_ROWS - 7))
         local INDEX
         for ((INDEX=MESSAGE_LINES; INDEX<CONTENT_ROWS; INDEX++)); do
@@ -423,6 +445,70 @@ show_message() {
         read -r -p "Press Enter to continue..." _
     fi
 }
+
+status_render() {
+    local CONTROLS="${1:-Please wait...   Ctrl-C exit}"
+    frame_setup
+    frame_header "${TUI_STATUS_TITLE:-NKP startup}"
+
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local START=0
+    local TOTAL=${#TUI_STATUS_LINES[@]}
+    (( TOTAL > CONTENT_ROWS )) && START=$((TOTAL - CONTENT_ROWS))
+
+    local INDEX COLOR MESSAGE
+    for ((INDEX=START; INDEX<TOTAL; INDEX++)); do
+        COLOR="${TUI_STATUS_COLORS[$INDEX]}"
+        MESSAGE="${TUI_STATUS_LINES[$INDEX]}"
+        frame_row_color "$COLOR" "  $MESSAGE"
+    done
+    for ((INDEX=TOTAL-START; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "$CONTROLS"
+}
+
+status_begin() {
+    TUI_STATUS_TITLE="$1"
+    TUI_STATUS_LINES=()
+    TUI_STATUS_COLORS=()
+    status_render
+}
+
+status_add() {
+    local COLOR="$1"
+    shift
+    TUI_STATUS_COLORS+=("$COLOR")
+    TUI_STATUS_LINES+=("$*")
+    status_render
+}
+
+status_pause() {
+    status_render "Enter continue   Ctrl-C exit"
+    IFS= read -r _ < /dev/tty
+}
+
+# ============================================================
+# DEPENDENCY CHECK
+# ============================================================
+status_begin "Checking local prerequisites"
+status_add "$CYAN" "Verifying required dependencies..."
+REQUIRED_COMMANDS=("curl" "jq" "tar")
+MISSING_COMMANDS=()
+for cmd in "${REQUIRED_COMMANDS[@]}"; do
+    if command -v "$cmd" &> /dev/null; then
+        status_add "$GREEN" "${cmd} is available."
+    else
+        MISSING_COMMANDS+=("$cmd")
+        status_add "$RED" "${cmd} is not installed."
+    fi
+done
+if [[ ${#MISSING_COMMANDS[@]} -gt 0 ]]; then
+    status_add "$YELLOW" "Install missing tools with: sudo yum install -y ${MISSING_COMMANDS[*]}"
+    status_pause
+    exit 1
+fi
+status_add "$GREEN" "All required dependencies verified."
 
 # ============================================================
 # HELPER: subnet check
@@ -586,30 +672,30 @@ validate_vm_image() {
     VM_IMAGE_VALID=false
     local FUZZY_LIST
     FUZZY_LIST=$(echo "$RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
-
-    echo ""
-    echo -e "${RED}  Image '${IMAGE_NAME}' not found on Prism Central.${NC}"
-
+    local IMAGE_MESSAGE="Image '${IMAGE_NAME}' was not found on Prism Central."
     if [[ -n "$FUZZY_LIST" ]]; then
-        echo -e "${YELLOW}  Similar images found:${NC}"
+        IMAGE_MESSAGE+=$'\n\nSimilar images found:'
         while IFS= read -r IMG; do
-            echo -e "    ${CYAN}${IMG}${NC}"
+            IMAGE_MESSAGE+=$'\n  '
+            IMAGE_MESSAGE+="$IMG"
         done <<< "$FUZZY_LIST"
     else
-        echo -e "${YELLOW}  No similar images found. Fetching full image list...${NC}"
+        IMAGE_MESSAGE+=$'\n\nNo similar images found. Fetching the full image list...'
         local ALL_RESULTS
         ALL_RESULTS=$(call_curl_v4 "GET" "/vmm/v4.0/content/images")
         local ALL_IMAGES
         ALL_IMAGES=$(echo "$ALL_RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
         if [[ -n "$ALL_IMAGES" ]]; then
+            IMAGE_MESSAGE+=$'\n\nAvailable images:'
             while IFS= read -r IMG; do
-                echo -e "    ${CYAN}${IMG}${NC}"
+                IMAGE_MESSAGE+=$'\n  '
+                IMAGE_MESSAGE+="$IMG"
             done <<< "$ALL_IMAGES"
         else
-            echo -e "${RED}  Could not retrieve image list from Prism Central.${NC}"
+            IMAGE_MESSAGE+=$'\n\nCould not retrieve the image list from Prism Central.'
         fi
     fi
-    echo ""
+    show_message "$IMAGE_MESSAGE"
 }
 
 summary_row() {
@@ -657,8 +743,7 @@ render_final_summary() {
 
 final_summary_confirmation() {
     local CONFIRM=""
-    printf '\n  Proceed with deployment? [Y/n]: ' >&2
-    IFS= read -r CONFIRM < /dev/tty
+    IFS= read -r -s -n 1 CONFIRM < /dev/tty
     [[ -z "$CONFIRM" ]] && CONFIRM="Y"
     [[ "$CONFIRM" =~ ^[Nn]$ ]] && return 1
     [[ "$CONFIRM" =~ ^[Yy]$ ]] || return 2
@@ -668,19 +753,19 @@ final_summary_confirmation() {
 # ============================================================
 # PREFLIGHT 1: CONTAINER RUNTIME & CGROUP DELEGATION
 # ============================================================
-echo -e "${CYAN}Performing Pre-flight checks...${NC}"
-echo -e "${CYAN}Checking container runtime and cgroup configuration...${NC}"
+status_begin "Preflight checks"
+status_add "$CYAN" "Checking container runtime and cgroup configuration..."
 
 CONTAINER_RUNTIME="unknown"
 if command -v podman &> /dev/null; then
     CONTAINER_RUNTIME="podman"
-    echo -e "${GREEN}--> Podman detected.${NC}"
+    status_add "$GREEN" "Podman detected."
 elif command -v docker &> /dev/null; then
     CONTAINER_RUNTIME="docker"
-    echo -e "${GREEN}--> Docker detected (no cgroup delegation needed for Docker daemon).${NC}"
+    status_add "$GREEN" "Docker detected; cgroup delegation is not required."
 else
-    echo -e "${YELLOW}WARNING: No container runtime (podman or docker) detected.${NC}"
-    echo -e "${YELLOW}NKP requires podman or docker to be installed.${NC}"
+    status_add "$YELLOW" "Warning: no podman or docker runtime detected."
+    status_add "$YELLOW" "NKP requires podman or docker to be installed."
 fi
 
 # Cgroup delegation is only needed for podman
@@ -689,57 +774,53 @@ if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
     GLOBAL_DELEGATE_CONF="$GLOBAL_DELEGATE_DIR/delegate.conf"
 
     if [[ ! -f "$GLOBAL_DELEGATE_CONF" ]]; then
-        echo -e "${YELLOW}--> Podman detected: cgroup v2 delegation missing. Applying fix...${NC}"
-        sudo mkdir -p "$GLOBAL_DELEGATE_DIR"
-        echo -e "[Service]\nDelegate=yes" | sudo tee "$GLOBAL_DELEGATE_CONF" > /dev/null
-        sudo systemctl daemon-reload
-        echo -e "${RED}=======================================================${NC}"
-        echo -e "${RED}SYSTEM CHANGE APPLIED: REBOOT REQUIRED${NC}"
-        echo -e "${YELLOW}The kernel requires a reboot to delegate cgroup control.${NC}"
-        echo -e "Please run: ${CYAN}sudo reboot${NC}"
-        echo -e "${RED}=======================================================${NC}"
+        status_add "$YELLOW" "Podman cgroup v2 delegation is missing; applying the fix..."
+        sudo mkdir -p "$GLOBAL_DELEGATE_DIR" >/dev/null 2>&1
+        printf '[Service]\nDelegate=yes\n' | sudo tee "$GLOBAL_DELEGATE_CONF" >/dev/null
+        sudo systemctl daemon-reload >/dev/null 2>&1
+        status_add "$RED" "System change applied: reboot required."
+        status_add "$YELLOW" "Run: sudo reboot"
+        status_pause
         exit 1
     fi
 
     if ! systemctl show "user@$(id -u).service" --property=Delegate | grep -q "Delegate=yes"; then
-        echo -e "${RED}=======================================================${NC}"
-        echo -e "${RED}ERROR: Cgroup delegation is configured but NOT ACTIVE.${NC}"
-        echo -e "${YELLOW}A reboot is required to activate these kernel permissions.${NC}"
-        echo -e "Please run: ${CYAN}sudo reboot${NC}"
-        echo -e "${RED}=======================================================${NC}"
+        status_add "$RED" "Error: cgroup delegation is configured but not active."
+        status_add "$YELLOW" "A reboot is required; run: sudo reboot"
+        status_pause
         exit 1
     fi
-    echo -e "${GREEN}--> Podman cgroup delegation verified and ACTIVE.${NC}"
+    status_add "$GREEN" "Podman cgroup delegation verified and active."
 elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
-    echo -e "${GREEN}--> Docker daemon detected (cgroup delegation not required).${NC}"
+    status_add "$GREEN" "Docker daemon is ready."
 fi
 
 # ============================================================
 # PREFLIGHT 2: NETWORK CONNECTIVITY CHECK
 # ============================================================
-echo -e "${YELLOW}Checking outbound connectivity to Nutanix portal...${NC}"
+status_add "$YELLOW" "Checking outbound connectivity to Nutanix portal..."
 if ! curl -s --connect-timeout 5 --max-time 10 https://portal.nutanix.com >/dev/null 2>&1; then
-    echo -e "${RED}ERROR: Cannot reach Nutanix portal (https://portal.nutanix.com).${NC}"
-    echo -e "${YELLOW}Troubleshooting steps:${NC}"
-    echo -e "  1. Verify your internet connection"
-    echo -e "  2. Check if a proxy is required: ${CYAN}curl -v https://portal.nutanix.com${NC}"
-    echo -e "  3. Verify firewall rules allow HTTPS traffic"
-    echo -e "  4. Test DNS resolution: ${CYAN}nslookup portal.nutanix.com${NC}"
+    status_add "$RED" "Error: cannot reach https://portal.nutanix.com."
+    status_add "$YELLOW" "Verify internet access, proxy settings, firewall, and DNS."
+    status_add "$CYAN" "Diagnostic: curl -v https://portal.nutanix.com"
+    status_pause
     exit 1
 fi
-echo -e "${GREEN}--> Outbound connectivity verified.${NC}"
+status_add "$GREEN" "Outbound connectivity verified."
 
 # ============================================================
 # PREFLIGHT 3: FIND OR DOWNLOAD BUNDLE
 # ============================================================
+status_begin "NKP bundle"
+status_add "$CYAN" "Looking for an existing NKP bundle or extracted bundle..."
+
 # Check for airgap bundle mistakenly placed in the directory
 if ls nkp-air-gapped-bundle_v*.tar.gz &>/dev/null; then
-    echo -e "${RED}ERROR: Found an NKP Air-Gapped Bundle in the current directory.${NC}"
-    echo -e "${YELLOW}This script requires the standard NKP Bundle, not the Air-Gapped Bundle.${NC}"
-    echo -e "  ${RED}Wrong:${NC}  nkp-air-gapped-bundle_v*.tar.gz"
-    echo -e "  ${GREEN}Correct:${NC} nkp-bundle_v*.tar.gz"
-    echo -e "${YELLOW}Please download the correct bundle from:${NC}"
-    echo -e "  https://portal.nutanix.com/page/downloads?product=nkp"
+    status_add "$RED" "Error: an NKP air-gapped bundle was found here."
+    status_add "$YELLOW" "This script requires the standard NKP Bundle."
+    status_add "$GREEN" "Correct filename: nkp-bundle_v*.tar.gz"
+    status_add "$CYAN" "Download: https://portal.nutanix.com/page/downloads?product=nkp"
+    status_pause
     exit 1
 fi
 
@@ -753,26 +834,28 @@ else
 fi
 
 if [[ -z "$BUNDLE_FILE" ]]; then
-    echo -e "${YELLOW}NKP Bundle not found in current directory.${NC}"
-    echo -e "${YELLOW}Open browser to: ${NC}"
-    echo -e "${YELLOW}https://portal.nutanix.com/page/downloads?product=nkp${NC}"
-    echo -e "${YELLOW}Find and download the standard ${GREEN}NKP Bundle${YELLOW} (NOT the Air-Gapped Bundle).${NC}"
+    status_add "$YELLOW" "NKP Bundle not found locally."
+    status_add "$CYAN" "Download the standard bundle from the Nutanix portal."
     while true; do
-        echo -ne "${CYAN}Please paste the full Nutanix Download URL: ${NC}"
-        read -r RAW_URL
+        prompt_text "Paste the full Nutanix Bundle download URL" "" RAW_URL
+        RAW_URL="$REPLY"
         [[ -z "$RAW_URL" ]] && exit 1
         BUNDLE_FILE=$(basename "${RAW_URL%%\?*}")
         if [[ "$BUNDLE_FILE" == *"air-gapped"* ]]; then
-            echo -e "${RED}ERROR: That URL points to the Air-Gapped Bundle.${NC}"
-            echo -e "${YELLOW}Please go back to the portal and copy the URL for the standard NKP Bundle.${NC}"
-            echo -e "  ${RED}Wrong:${NC}  nkp-air-gapped-bundle_v*.tar.gz"
-            echo -e "  ${GREEN}Correct:${NC} nkp-bundle_v*.tar.gz"
+            show_message "That URL points to the Air-Gapped Bundle.\n\nPlease copy the URL for the standard NKP Bundle."
             BUNDLE_FILE=""
             continue
         fi
-        curl -kL -o "$BUNDLE_FILE" "$RAW_URL"
-        break
+        status_add "$CYAN" "Downloading $(basename "$BUNDLE_FILE")..."
+        if curl -kL -sS -o "$BUNDLE_FILE" "$RAW_URL" >/dev/null 2>&1; then
+            status_add "$GREEN" "Bundle download completed."
+            break
+        fi
+        rm -f "$BUNDLE_FILE"
+        show_message "The bundle download failed.\n\nCheck the URL and network connectivity, then try again."
     done
+else
+    status_add "$GREEN" "Using bundle: $BUNDLE_FILE"
 fi
 
 # ============================================================
@@ -782,38 +865,46 @@ VERSION_WITH_V=$(echo "$BUNDLE_FILE" | sed -E 's/.*bundle_(v[0-9]+\.[0-9]+\.[0-9
 TARGET_DIR="${BUNDLE_FILE%.tar.gz}"
 
 if [[ ! -d "$TARGET_DIR" ]]; then
-    echo -e "${CYAN}Extracting $BUNDLE_FILE into ./$TARGET_DIR...${NC}"
+    status_add "$CYAN" "Extracting $BUNDLE_FILE..."
     mkdir -p "$TARGET_DIR"
-    tar -xzvpf "$BUNDLE_FILE" -C "$TARGET_DIR" --strip-components=1
+    if ! tar -xzpf "$BUNDLE_FILE" -C "$TARGET_DIR" --strip-components=1 >/dev/null 2>&1; then
+        status_add "$RED" "Error: bundle extraction failed."
+        status_pause
+        exit 1
+    fi
 
     # Validate expected structure exists
     if [[ ! -f "$TARGET_DIR/cli/nkp" ]] || [[ ! -f "$TARGET_DIR/kubectl" ]]; then
-        echo -e "${RED}ERROR: Expected binaries not found in extracted bundle.${NC}"
-        echo -e "${YELLOW}Bundle structure may be different than expected.${NC}"
-        echo -e "Contents of extracted directory:${NC}"
-        find "$TARGET_DIR" -type f \( -name "nkp" -o -name "kubectl" \) 2>/dev/null | sed 's/^/  /' || echo "  (no matching files found)"
+        status_add "$RED" "Error: expected nkp and kubectl binaries were not found."
+        status_add "$YELLOW" "The bundle structure may be different than expected."
+        status_pause
         exit 1
     fi
-    echo -e "${CYAN}Removing tarball $BUNDLE_FILE...${NC}"
+    status_add "$GREEN" "Bundle contents validated."
+    status_add "$CYAN" "Removing downloaded tarball..."
     rm -f "$BUNDLE_FILE"
+else
+    status_add "$GREEN" "Using existing extracted bundle: $TARGET_DIR"
 fi
 
 # ============================================================
 # PREFLIGHT 5: INSTALL BINARIES TO /usr/local/bin
 # ============================================================
-echo -e "${CYAN}Installing nkp and kubectl to /usr/local/bin...${NC}"
+status_add "$CYAN" "Installing nkp and kubectl to /usr/local/bin..."
 
 if sudo cp "./$TARGET_DIR/cli/nkp" /usr/local/bin/nkp && \
    sudo cp "./$TARGET_DIR/kubectl" /usr/local/bin/kubectl && \
    sudo chmod 755 /usr/local/bin/nkp /usr/local/bin/kubectl; then
     if [[ -x "/usr/local/bin/nkp" ]] && [[ -x "/usr/local/bin/kubectl" ]]; then
-        echo -e "${GREEN}--> Binaries installed successfully.${NC}"
+        status_add "$GREEN" "NKP tools installed successfully."
     else
-        echo -e "${RED}Error: Files copied but permission check failed.${NC}"
+        status_add "$RED" "Error: files copied but permission check failed."
+        status_pause
         exit 1
     fi
 else
-    echo -e "${RED}Error: Failed to install binaries. Check sudo permissions or source paths.${NC}"
+    status_add "$RED" "Error: failed to install binaries. Check sudo permissions."
+    status_pause
     exit 1
 fi
 
@@ -828,12 +919,10 @@ BOOTSTRAP_IMAGE="./$TARGET_DIR/konvoy-bootstrap-image-${VERSION_WITH_V}.tar"
 # ============================================================
 # USER INPUTS
 # ============================================================
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${CYAN}      NKP Version Detected: ${GREEN}${VERSION_WITH_V}${NC}"
+status_add "$PURPLE" "NKP Version Detected: ${VERSION_WITH_V}"
 if [[ -f "$DEFAULTS_FILE" ]]; then
-    echo -e "${CYAN}      Defaults loaded from: ${GREEN}${DEFAULTS_FILE}${NC}"
+    status_add "$CYAN" "Defaults loaded from: ${DEFAULTS_FILE}"
 fi
-echo -e "${YELLOW}=======================================================${NC}"
 
 PC_ENDPOINT_DEFAULT=$(get_default "pc_endpoint")
 while true; do
@@ -1123,12 +1212,13 @@ WORKER_REPLICAS="${WORKER_OPTIONS[$((SELECTED_INDEX - 1))]}"
 # SAVE DEFAULTS — written immediately after inputs
 # ============================================================
 save_defaults
-echo -e "${GREEN}--> Inputs saved to ${DEFAULTS_FILE}${NC}"
 
 # ============================================================
 # VERSION VALIDATION (v4 API)
 # ============================================================
-echo -e "${YELLOW}Validating Prism Central and AOS versions...${NC}"
+status_begin "Final environment checks"
+status_add "$GREEN" "Inputs saved to ${DEFAULTS_FILE}"
+status_add "$YELLOW" "Validating Prism Central and AOS versions..."
 
 # A. PC version — select the PRISM_CENTRAL entity from cluster list
 PC_V4_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters")
@@ -1147,13 +1237,10 @@ PC_RAW=$(echo "$PC_V4_RESPONSE" | jq -r '
     // empty' 2>/dev/null | head -n1)
 
 if [[ -z "$PC_VERSION" ]]; then
-    echo -e "${RED}ERROR: Failed to retrieve Prism Central version.${NC}"
-    echo -e "${YELLOW}Possible causes:${NC}"
-    echo -e "  1. Invalid Prism Central endpoint: $PC_ENDPOINT"
-    echo -e "  2. Invalid credentials (check username/password)"
-    echo -e "  3. Network connectivity to Prism Central (port 9440)"
-    echo -e "  4. Prism Central is not responding"
-    echo -e "${YELLOW}To debug, test connectivity: ${CYAN}curl -k https://${PC_ENDPOINT}:9440/api/clustermgmt/v4.0/config/clusters${NC}"
+    status_add "$RED" "Error: failed to retrieve the Prism Central version."
+    status_add "$YELLOW" "Check endpoint, credentials, port 9440, and Prism Central availability."
+    status_add "$CYAN" "Diagnostic: curl -k https://${PC_ENDPOINT}:9440/api/clustermgmt/v4.0/config/clusters"
+    status_pause
     exit 1
 fi
 
@@ -1165,85 +1252,87 @@ AOS_VERSION=$(echo "$AHV_CLUSTER_RESPONSE" | jq -r \
     2>/dev/null | head -n1)
 
 if [[ -z "$AOS_VERSION" ]]; then
-    echo -e "${RED}ERROR: Could not find AHV Cluster named: ${CYAN}${AHV_CLUSTER}${NC}"
-    echo -e "${YELLOW}Available clusters in Prism Central:${NC}"
-    echo "$AHV_CLUSTER_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sed 's/^/  - /' || echo "  (unable to list clusters)"
+    status_add "$RED" "Error: could not find AHV cluster ${AHV_CLUSTER}."
+    status_add "$YELLOW" "The selected cluster may no longer be available."
+    status_pause
     exit 1
 fi
 
 if ! version_gt "$PC_VERSION" "7.3" || ! version_gt "$AOS_VERSION" "7.3"; then
-    echo -e "${RED}ERROR: Installation halted. Incompatible versions detected.${NC}"
-    echo -e "${YELLOW}Required: Prism Central > 7.3, AOS > 7.3${NC}"
-    echo -e "${CYAN}Detected:${NC}"
-    echo -e "  Prism Central: $PC_RAW"
-    echo -e "  AOS: $AOS_VERSION"
+    status_add "$RED" "Error: installation halted; incompatible versions detected."
+    status_add "$YELLOW" "Required: Prism Central > 7.3 and AOS > 7.3"
+    status_add "$CYAN" "Detected: PC ${PC_RAW}; AOS ${AOS_VERSION}"
+    status_pause
     exit 1
 fi
 
-echo -e "${GREEN}--> Version validation passed.${NC}"
+status_add "$GREEN" "Version validation passed."
 
 # ============================================================
 # SSH KEY SETUP
 # ============================================================
-echo -e "${CYAN}Setting up SSH key...${NC}"
+status_add "$CYAN" "Setting up SSH key..."
 if [[ ! -f ~/.ssh/id_rsa ]]; then
-    echo -e "${YELLOW}--> No SSH key found. Generating RSA 4096 key...${NC}"
+    status_add "$YELLOW" "No SSH key found; generating an RSA 4096 key..."
     mkdir -p ~/.ssh
     chmod 700 ~/.ssh
     ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
-    echo -e "${GREEN}--> SSH key generated: ~/.ssh/id_rsa${NC}"
+    status_add "$GREEN" "SSH key generated: ~/.ssh/id_rsa"
 fi
 export SSH_PUBLIC_KEY_FILE=~/.ssh/id_rsa.pub
-echo -e "${GREEN}--> SSH_PUBLIC_KEY_FILE set to: ${SSH_PUBLIC_KEY_FILE}${NC}"
+status_add "$GREEN" "SSH public key ready."
 
 # ============================================================
 # PREFLIGHT 6: LOAD KONVOY BOOTSTRAP IMAGE
 # ============================================================
-echo -e "${CYAN}Loading Konvoy bootstrap image...${NC}"
+status_add "$CYAN" "Loading Konvoy bootstrap image..."
 
 if [[ ! -f "$BOOTSTRAP_IMAGE" ]]; then
-    echo -e "${RED}ERROR: Bootstrap image not found: ${BOOTSTRAP_IMAGE}${NC}"
-    echo -e "${YELLOW}Expected path: ${BOOTSTRAP_IMAGE}${NC}"
-    echo -e "${YELLOW}Available .tar files in bundle directory:${NC}"
-    ls "./$TARGET_DIR"/*.tar 2>/dev/null | sed 's/^/  /' || echo "  (no .tar files found)"
+    status_add "$RED" "Error: bootstrap image not found."
+    status_add "$YELLOW" "Expected: ${BOOTSTRAP_IMAGE}"
+    status_pause
     exit 1
 fi
 
-echo -e "${CYAN}--> Loading: $(basename "$BOOTSTRAP_IMAGE")${NC}"
+status_add "$CYAN" "Loading: $(basename "$BOOTSTRAP_IMAGE")"
 if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
-    podman load -i "$BOOTSTRAP_IMAGE"
+    podman load -i "$BOOTSTRAP_IMAGE" >/dev/null 2>&1
     LOAD_EXIT=$?
     if [[ $LOAD_EXIT -ne 0 ]]; then
-        echo -e "${RED}ERROR: Failed to load bootstrap image (exit code ${LOAD_EXIT}).${NC}"
-        echo -e "${YELLOW}Verify the .tar file is not corrupted and that ${CONTAINER_RUNTIME} is functioning correctly.${NC}"
+        status_add "$RED" "Error: failed to load bootstrap image (exit ${LOAD_EXIT})."
+        status_add "$YELLOW" "Verify the .tar file and ${CONTAINER_RUNTIME} runtime."
+        status_pause
         exit 1
     fi
     # Podman does not automatically resolve the docker.io registry prefix;
     # nkp references the image as docker.io/mesosphere/konvoy-bootstrap:vVERSION
     BOOTSTRAP_TAG="docker.io/mesosphere/konvoy-bootstrap:${VERSION_WITH_V}"
-    echo -e "${CYAN}--> Tagging bootstrap image for Podman: ${BOOTSTRAP_TAG}${NC}"
-    podman image tag "konvoy-bootstrap:${VERSION_WITH_V}" "$BOOTSTRAP_TAG"
+    status_add "$CYAN" "Tagging bootstrap image for Podman..."
+    podman image tag "konvoy-bootstrap:${VERSION_WITH_V}" "$BOOTSTRAP_TAG" >/dev/null 2>&1
     if [[ $? -ne 0 ]]; then
-        echo -e "${RED}ERROR: Failed to tag bootstrap image as ${BOOTSTRAP_TAG}.${NC}"
-        echo -e "${YELLOW}Verify the image loaded correctly with: podman images | grep konvoy-bootstrap${NC}"
+        status_add "$RED" "Error: failed to tag bootstrap image."
+        status_add "$YELLOW" "Verify with: podman images | grep konvoy-bootstrap"
+        status_pause
         exit 1
     fi
-    echo -e "${GREEN}--> Bootstrap image tagged successfully.${NC}"
+    status_add "$GREEN" "Bootstrap image tagged successfully."
 elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
-    docker load -i "$BOOTSTRAP_IMAGE"
+    docker load -i "$BOOTSTRAP_IMAGE" >/dev/null 2>&1
     LOAD_EXIT=$?
 else
-    echo -e "${RED}ERROR: No container runtime available to load bootstrap image.${NC}"
-    echo -e "${YELLOW}Install podman or docker before running this script.${NC}"
+    status_add "$RED" "Error: no container runtime is available."
+    status_add "$YELLOW" "Install podman or docker before continuing."
+    status_pause
     exit 1
 fi
 
 if [[ $LOAD_EXIT -ne 0 ]]; then
-    echo -e "${RED}ERROR: Failed to load bootstrap image (exit code ${LOAD_EXIT}).${NC}"
-    echo -e "${YELLOW}Verify the .tar file is not corrupted and that ${CONTAINER_RUNTIME} is functioning correctly.${NC}"
+    status_add "$RED" "Error: failed to load bootstrap image (exit ${LOAD_EXIT})."
+    status_add "$YELLOW" "Verify the .tar file and ${CONTAINER_RUNTIME} runtime."
+    status_pause
     exit 1
 fi
-echo -e "${GREEN}--> Konvoy bootstrap image loaded successfully.${NC}"
+status_add "$GREEN" "Konvoy bootstrap image loaded successfully."
 
 # Prepare the kubeconfig location before rendering the final screen so the
 # summary really is the last review surface before deployment.
