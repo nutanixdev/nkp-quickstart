@@ -410,6 +410,88 @@ modern_select() {
     done
 }
 
+frame_choice_row() {
+    local CURRENT="$1"
+    shift
+    local OPTIONS=("$@")
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    local USED=2
+    local INDEX VALUE
+
+    printf '%b│%b  ' "$PURPLE" "$RESET" >&2
+    for ((INDEX=0; INDEX<${#OPTIONS[@]}; INDEX++)); do
+        VALUE="${OPTIONS[$INDEX]}"
+        if (( INDEX == CURRENT )); then
+            printf '\033[48;5;99m\033[97m[%s]\033[0m' "$VALUE" >&2
+        else
+            printf ' %s ' "$VALUE" >&2
+        fi
+        USED=$((USED + ${#VALUE} + 2))
+        if (( INDEX < ${#OPTIONS[@]} - 1 )); then
+            printf '  ' >&2
+            USED=$((USED + 2))
+        fi
+    done
+
+    local PADDING=$((SCREEN_INNER - USED))
+    (( PADDING < 0 )) && PADDING=0
+    printf '%*s%b│%b\n' "$PADDING" '' "$PURPLE" "$RESET" >&2
+}
+
+modern_compact_select() {
+    local LABEL="$1"
+    local INITIAL_INDEX="$2"
+    shift 2
+    local OPTIONS=("$@")
+    local CURRENT="${INITIAL_INDEX:-0}" KEY KEY2 OLD_STTY
+
+    [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
+    [[ "$CURRENT" =~ ^[0-9]+$ && "$CURRENT" -lt "${#OPTIONS[@]}" ]] || CURRENT=0
+    [[ -c /dev/tty ]] || return 1
+
+    OLD_STTY=$(stty -g < /dev/tty) || return 1
+    stty -echo -icanon min 1 time 0 < /dev/tty || return 1
+    frame_setup
+
+    while true; do
+        frame_header "$LABEL"
+        frame_choice_row "$CURRENT" "${OPTIONS[@]}"
+
+        local CONTENT_ROWS=$((SCREEN_ROWS - 8))
+        local INDEX
+        for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+            frame_row ""
+        done
+        frame_footer "$((CURRENT + 1))/${#OPTIONS[@]}   ←/→ choose   Enter select   q exit"
+
+        IFS= read -r -s -n 1 -u 3 KEY < /dev/tty
+        if [[ -z "$KEY" ]]; then
+            stty "$OLD_STTY" < /dev/tty
+            printf '%s' "$((CURRENT + 1))"
+            return 0
+        fi
+        case "$KEY" in
+            $'\x1b')
+                IFS= read -r -s -n 2 -u 3 -t 0.1 KEY2 < /dev/tty || true
+                case "${KEY}${KEY2}" in
+                    $'\x1b[D'|$'\x1b[A') (( CURRENT > 0 )) && CURRENT=$((CURRENT - 1)) ;;
+                    $'\x1b[C'|$'\x1b[B') (( CURRENT < ${#OPTIONS[@]} - 1 )) && CURRENT=$((CURRENT + 1)) ;;
+                esac
+                ;;
+            $'\n'|$'\r')
+                stty "$OLD_STTY" < /dev/tty
+                printf '%s' "$((CURRENT + 1))"
+                return 0
+                ;;
+            q|Q)
+                stty "$OLD_STTY" < /dev/tty
+                return 1
+                ;;
+        esac
+    done
+}
+
 select_option() {
     local LABEL="$1"
     shift
@@ -423,6 +505,20 @@ select_option() {
     # The modern picker is dependency-free and works well over SSH.
     exec 3<> /dev/tty
     modern_select "$LABEL" "${OPTIONS[@]}"
+    local RESULT=$?
+    exec 3>&-
+    return "$RESULT"
+}
+
+select_compact_option() {
+    local LABEL="$1"
+    local INITIAL_INDEX="$2"
+    shift 2
+    local OPTIONS=("$@")
+
+    [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
+    exec 3<> /dev/tty
+    modern_compact_select "$LABEL" "$INITIAL_INDEX" "${OPTIONS[@]}"
     local RESULT=$?
     exec 3>&-
     return "$RESULT"
@@ -1199,23 +1295,26 @@ fi
 # Control plane replicas — selectable, default from saved or fall back to 1
 CP_REPLICAS_DEFAULT=$(get_default "cp_replicas")
 CP_REPLICAS_DEFAULT=${CP_REPLICAS_DEFAULT:-1}
-CP_OPTIONS=()
-[[ "$CP_REPLICAS_DEFAULT" =~ ^[135]$ ]] && CP_OPTIONS+=("$CP_REPLICAS_DEFAULT")
-for REPLICA_OPTION in 1 3 5; do
-    [[ "$REPLICA_OPTION" == "$CP_REPLICAS_DEFAULT" ]] || CP_OPTIONS+=("$REPLICA_OPTION")
+CP_OPTIONS=(1 3 5)
+CP_DEFAULT_INDEX=0
+for INDEX in "${!CP_OPTIONS[@]}"; do
+    [[ "${CP_OPTIONS[$INDEX]}" == "$CP_REPLICAS_DEFAULT" ]] && CP_DEFAULT_INDEX="$INDEX"
 done
-SELECTED_INDEX=$(select_option "Select the Control Plane node count" "${CP_OPTIONS[@]}") || exit 1
+SELECTED_INDEX=$(select_compact_option "Select the Control Plane node count" "$CP_DEFAULT_INDEX" "${CP_OPTIONS[@]}") || exit 1
 CP_REPLICAS="${CP_OPTIONS[$((SELECTED_INDEX - 1))]}"
 
 # Worker replicas — selectable, default from saved, else from licensing answer
 WORKER_REPLICAS_DEFAULT=$(get_default "worker_replicas")
 WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-$LICENSE_DEFAULT}
 WORKER_OPTIONS=()
-[[ "$WORKER_REPLICAS_DEFAULT" =~ ^([1-9]|10)$ ]] && WORKER_OPTIONS+=("$WORKER_REPLICAS_DEFAULT")
 for REPLICA_OPTION in {1..10}; do
-    [[ "$REPLICA_OPTION" == "$WORKER_REPLICAS_DEFAULT" ]] || WORKER_OPTIONS+=("$REPLICA_OPTION")
+    WORKER_OPTIONS+=("$REPLICA_OPTION")
 done
-SELECTED_INDEX=$(select_option "Select the Worker node count" "${WORKER_OPTIONS[@]}") || exit 1
+WORKER_DEFAULT_INDEX=0
+if [[ "$WORKER_REPLICAS_DEFAULT" =~ ^([1-9]|10)$ ]]; then
+    WORKER_DEFAULT_INDEX=$((WORKER_REPLICAS_DEFAULT - 1))
+fi
+SELECTED_INDEX=$(select_compact_option "Select the Worker node count" "$WORKER_DEFAULT_INDEX" "${WORKER_OPTIONS[@]}") || exit 1
 WORKER_REPLICAS="${WORKER_OPTIONS[$((SELECTED_INDEX - 1))]}"
 
 # ============================================================
@@ -1354,25 +1453,18 @@ export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}.conf"
 # ============================================================
 # FINAL SUMMARY — the last screen before deployment
 # ============================================================
-VM_IMAGE_VALID=false
+# The VM image was selected from the Prism Central image list above, so it is
+# already known to exist. Avoid a second filtered API request here; some PC
+# releases do not support that filter consistently and could skip the review
+# screen even though the selected image is valid.
 while true; do
-    validate_vm_image "$VM_IMAGE"
-
-    if [[ "$VM_IMAGE_VALID" == true ]]; then
-        render_final_summary
-        if final_summary_confirmation; then
-            break
-        elif [[ $? -eq 1 ]]; then
-            exit 0
-        fi
-        continue
-    fi
-
-    prompt_text "Enter the correct VM Image Name" "$VM_IMAGE" NEW_IMAGE
-    NEW_IMAGE="$REPLY"
-    if [[ -n "$NEW_IMAGE" ]]; then
-        VM_IMAGE="$NEW_IMAGE"
-        save_defaults
+    render_final_summary
+    final_summary_confirmation
+    CONFIRM_RESULT=$?
+    if [[ $CONFIRM_RESULT -eq 0 ]]; then
+        break
+    elif [[ $CONFIRM_RESULT -eq 1 ]]; then
+        exit 0
     fi
 done
 
