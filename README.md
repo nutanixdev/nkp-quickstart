@@ -124,38 +124,27 @@ This is the guided deployment path for the jump host created from the repository
 
 The application runs directly in the terminal with a full-screen, purple-themed interface. It does not require a separate TUI framework. Arrow keys and Enter are used for selections; text fields, masked password input, and the final Y/N confirmation are handled inside the same bordered interface. Use `Ctrl-C` to exit.
 
-#### What happens during a run
+<p align="center">
+  <img src="./images/nkp-deployment-progress.png" alt="NKP deployment progress screen" width="800">
+</p>
 
-1. **Local preflight:** Verifies the required command-line tools, checks Docker/Podman and cgroup configuration, tests outbound access to the Nutanix portal, discovers or downloads the NKP bundle, extracts it, and installs the bundled `nkp` and `kubectl` binaries.
+#### Run flow
 
-2. **Prism Central login:** Collects the Prism Central IPv4 endpoint, username, and masked password. The endpoint and username are saved immediately to `nkpDeploy_defaults.json` so they remain available after a later failed attempt. The password is never written to disk.
+1. **Preflight:** Checks dependencies, container runtime/cgroups, portal connectivity, the NKP bundle, and bundled CLI installation.
 
-3. **API-backed selections:** Uses Prism Central v4 APIs to populate selectors for the AHV cluster, network, storage container, and Rocky VM image. The selected network's CIDR is used to validate the remaining network inputs.
+2. **Discovery:** Prompts for Prism Central credentials, then uses v4 APIs to populate the AHV cluster, network, storage container, and Rocky image selectors. The endpoint and username persist in `nkpDeploy_defaults.json`; the password is never saved.
 
-4. **Network and sizing inputs:** Requests the cluster name, control-plane VIP, and load-balancer start address using only the editable host portion of the selected network. You then select the number of load-balancer IPs; the end address is calculated automatically. Control-plane replicas are limited to `1`, `3`, or `5`, and worker replicas to `1` through `10`.
+3. **Configuration:** Uses the selected network CIDR to validate the control-plane VIP and load-balancer range. The load-balancer end address is calculated from the selected start address and count; replica counts use bounded selectors.
 
-5. **Compatibility checks:** Compares the NKP bundle version, detected Prism Central and AOS versions, and Kubernetes version embedded in the selected Rocky image with the rules in [`nkp_compatibility.json`](./nkp_compatibility.json). A release can list more than one compatible PC/AOS row and supports the current Kubernetes minor version plus one version back where applicable.
-
-6. **Final review and deployment:** Displays a terminal-sized deployment summary and waits for an explicit `Y` or `N` before loading bootstrap images and running `nkp create cluster`.
+4. **Review and deploy:** Validates NKP, AOS, Prism Central, and Rocky-image compatibility, shows the final summary, waits for Y/N confirmation, and runs `nkp create cluster` inside the bordered interface.
 
 #### NKP bundle download
 
-The script first looks for a standard NKP bundle that is already present or extracted in the current directory. If it cannot find one, it asks for the **full download URL** from the Nutanix Support Portal.
+The script reuses a local standard bundle when available. Otherwise, open the NKP release download page in the Nutanix Support Portal, copy the **standard NKP Bundle** link itself, and paste the complete URL—including any query string—into the prompt. Do not use the portal page URL, NKP CLI link, or Air-Gapped Bundle link.
 
-In the portal, open the download page for the NKP release you want, locate the **standard NKP Bundle**, and copy the download link itself. Paste that complete URL into the prompt exactly as provided, including any query string or temporary access parameters. Do not paste the portal page URL, the NKP CLI link, or the Air-Gapped Bundle link. The filename must resolve to the normal `nkp-bundle_v*.tar.gz` format; the script rejects air-gapped bundles.
+#### Prism Central selections
 
-#### Inputs loaded from Prism Central
-
-| Input | How it is supplied |
-| ----- | ------------------ |
-| Prism Central endpoint and username | Entered once and retained in `nkpDeploy_defaults.json` |
-| Prism Central password | Entered for each run; never saved |
-| AHV cluster | Selected from the Prism Central v4 cluster API |
-| Network | Selected from the v4 subnet API; CIDR is used for validation and host-prefix prompts |
-| Storage container | Selected from the v4 storage-container API |
-| VM image | Selected from Rocky images returned by Prism Central; the Kubernetes version is extracted from its name |
-| Control-plane VIP and load-balancer range | Host portion entered against the selected network; load-balancer end address is calculated |
-| Control-plane and worker replicas | Selected from bounded options |
+The v4 API supplies selectors for the AHV cluster, network/CIDR, storage container, and versioned Rocky image. Enter the cluster name, network host portions, and node counts; the application validates and calculates the derived addresses.
 
 The deployment typically takes 45–60 minutes. Once it completes, configure the generated kubeconfig and view the dashboard details:
 
@@ -166,14 +155,7 @@ nkp get dashboard
 
 #### Compatibility data
 
-The deployment workflow reads release compatibility rules from [`nkp_compatibility.json`](./nkp_compatibility.json). Each release entry has exactly four fields:
-
-- `nkp_version` — matched to the `vX.Y.Z` version in the NKP bundle filename
-- `aos_min_version` — minimum AOS versions returned by Prism Central
-- `prism_central_min_version` — matching Prism Central minimum versions returned by Prism Central
-- `nkp_supported_version` — Kubernetes minor versions supported by the selected NKP Rocky image
-
-For releases with multiple PC/AOS compatibility rows, the AOS and Prism Central arrays are positionally aligned. Update this file as new NKP releases are added or compatibility requirements change.
+Rules are stored in [`nkp_compatibility.json`](./nkp_compatibility.json). Each NKP release defines `nkp_version`, aligned AOS/Prism Central minimum-version lists, and supported Kubernetes minor versions. Add or update entries as new releases are approved; listing two Kubernetes minors supports the current version and one version back.
 
 ---
 
