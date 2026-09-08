@@ -899,23 +899,30 @@ render_final_summary() {
     summary_row "Control Plane Nodes" "$CP_REPLICAS"
     summary_row "Worker Nodes" "$WORKER_REPLICAS"
     summary_row "Kubeconfig" "$KUBECONFIG"
-    summary_row "Deployment approval" "Press Y to deploy or N to exit"
-    local SUMMARY_ROWS=17
+    local SUMMARY_ROWS=16
     local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local PROMPT_TEXT="  Proceed with deployment? [Y/N]: "
+    local PROMPT_COLUMN=$((2 + ${#PROMPT_TEXT}))
+    frame_row "$PROMPT_TEXT"
+    # Save the cursor directly on the visible approval prompt, then finish
+    # drawing the frame and restore it before reading the answer.
+    printf '\033[1A\033[%dG\033[s' "$PROMPT_COLUMN" >&2
+    printf '\033[1B\033[1G' >&2
     local INDEX
-    for ((INDEX=SUMMARY_ROWS; INDEX<CONTENT_ROWS; INDEX++)); do
+    for ((INDEX=SUMMARY_ROWS + 1; INDEX<CONTENT_ROWS; INDEX++)); do
         frame_row ""
     done
-    frame_footer "Y deploy   N exit"
+    frame_footer "Type Y or N, then Enter   Ctrl-C exit"
+    printf '\033[u' >&2
 }
 
 final_summary_confirmation() {
     local CONFIRM=""
     while true; do
-        IFS= read -r -s -n 1 CONFIRM < /dev/tty
+        IFS= read -r CONFIRM < /dev/tty
         # Ignore an Enter/newline left behind by the preceding selector. The
         # deployment review must require an explicit Y or N.
-        [[ -z "$CONFIRM" || "$CONFIRM" == $'\n' || "$CONFIRM" == $'\r' ]] && continue
+        [[ -z "$CONFIRM" ]] && continue
         [[ "$CONFIRM" =~ ^[Nn]$ ]] && return 1
         [[ "$CONFIRM" =~ ^[Yy]$ ]] && return 0
     done
