@@ -250,6 +250,15 @@ frame_header() {
     printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
 }
 
+frame_prompt_header() {
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    printf '\033[2J\033[H' >&2
+    printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    frame_row "  NKP DEPLOYMENT"
+    printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+}
+
 frame_footer() {
     local CONTROLS="$1"
     local PURPLE='\033[38;5;141m'
@@ -278,7 +287,7 @@ modern_prompt() {
     local VALUE=""
 
     frame_setup
-    frame_header "$LABEL"
+    frame_prompt_header
     local INPUT_TEXT="  ${LABEL}: "
     local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
     [[ "$MASKED" == true ]] && INPUT_TEXT="  Password: " && INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
@@ -289,7 +298,7 @@ modern_prompt() {
         frame_row ""
     done
     frame_footer "Enter submit   Ctrl-C exit"
-    printf '\033[5;%dH' "$INPUT_COLUMN" >&2
+    printf '\033[4;%dH' "$INPUT_COLUMN" >&2
     if [[ "$MASKED" == true ]]; then
         IFS= read -r -s VALUE < /dev/tty
         printf '\n' >&2
@@ -516,7 +525,7 @@ modern_host_prompt() {
     (( HOST_OCTETS != 1 )) && OCTET_WORD="octets"
 
     frame_setup
-    frame_header "$LABEL"
+    frame_prompt_header
     local INPUT_TEXT="  ${LABEL}: ${FIXED_PREFIX}"
     local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
     frame_row "$INPUT_TEXT"
@@ -526,7 +535,7 @@ modern_host_prompt() {
         frame_row ""
     done
     frame_footer "Type ${HOST_OCTETS} host ${OCTET_WORD}   Enter submit   Ctrl-C exit"
-    printf '\033[5;%dH' "$INPUT_COLUMN" >&2
+    printf '\033[4;%dH' "$INPUT_COLUMN" >&2
     IFS= read -r VALUE < /dev/tty
     [[ -z "$VALUE" && -n "$DEFAULT_SUFFIX" ]] && VALUE="$DEFAULT_SUFFIX"
     printf '%s' "$VALUE"
