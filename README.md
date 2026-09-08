@@ -176,7 +176,7 @@ This method guides you through the entire deployment process interactively with 
 
 #### What the Script Does
 
-- **Dependency Check:** Verifies `curl`, `jq`, and `tar`; uses `whiptail` for text/password dialogs when available (the supplied cloud-init installs it)
+- **Dependency Check:** Verifies `curl`, `jq`, and `tar`; the modern keyboard picker and prompts use ANSI terminal controls without an additional UI dependency
 - **Prism Central Discovery:** Uses the v4 cluster, networking/subnet, storage-container, and image APIs to populate the selectable values
 - **System Prerequisites:** Checks/configures cgroup v2 delegation (may require reboot)
 - **Connectivity Check:** Verifies outbound access to Nutanix portal

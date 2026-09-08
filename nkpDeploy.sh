@@ -19,21 +19,6 @@ for cmd in "${REQUIRED_COMMANDS[@]}"; do
 done
 echo -e "${GREEN}--> All required dependencies verified.${NC}"
 
-# whiptail is preferred for the TUI.  dialog is also supported, and the
-# built-in bash select menu is used as a dependency-free fallback.
-TUI_BIN=""
-if command -v whiptail &> /dev/null; then
-    TUI_BIN="whiptail"
-elif command -v dialog &> /dev/null; then
-    TUI_BIN="dialog"
-fi
-
-if [[ -n "$TUI_BIN" ]]; then
-    echo -e "${GREEN}--> TUI detected: ${TUI_BIN}.${NC}"
-else
-    echo -e "${YELLOW}--> whiptail/dialog not found; using the built-in selectable menus.${NC}"
-fi
-
 # --- Defaults file sits next to the script ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULTS_FILE="${SCRIPT_DIR}/nkpDeploy_defaults.json"
@@ -203,21 +188,16 @@ get_input() {
 # ============================================================
 # TUI HELPERS
 # ============================================================
-# These helpers keep the script usable over SSH and on hosts without
-# whiptail/dialog.  REPLY is intentionally global so callers can use the
-# same helper for both TUI and plain terminal input.
+# These helpers keep the script usable over SSH. REPLY is intentionally
+# global so callers can use the same helper for both prompts and menus.
 prompt_text() {
     local LABEL="$1"
     local DEFAULT_VALUE="$2"
     local VAR_NAME="$3"
     local MODE="$4"
 
-    if [[ -n "$TUI_BIN" ]]; then
-        if [[ "$TUI_BIN" == "whiptail" ]]; then
-            REPLY=$(whiptail --title "NKP Deployment" --inputbox "$LABEL" 10 78 "$DEFAULT_VALUE" 3>&1 1>&2 2>&3) || exit 0
-        else
-            REPLY=$(dialog --stdout --title "NKP Deployment" --inputbox "$LABEL" 10 78 "$DEFAULT_VALUE") || exit 0
-        fi
+    if [[ -c /dev/tty ]]; then
+        REPLY=$(modern_prompt "$LABEL" "$DEFAULT_VALUE" false) || exit 0
     else
         get_input "${LABEL}: " "$VAR_NAME" "$MODE"
         REPLY="${!VAR_NAME}"
@@ -226,12 +206,8 @@ prompt_text() {
 
 prompt_password() {
     local LABEL="$1"
-    if [[ -n "$TUI_BIN" ]]; then
-        if [[ "$TUI_BIN" == "whiptail" ]]; then
-            REPLY=$(whiptail --title "NKP Deployment" --passwordbox "$LABEL" 10 78 3>&1 1>&2 2>&3) || exit 0
-        else
-            REPLY=$(dialog --stdout --title "NKP Deployment" --passwordbox "$LABEL" 10 78) || exit 0
-        fi
+    if [[ -c /dev/tty ]]; then
+        REPLY=$(modern_prompt "$LABEL" "" true) || exit 0
     else
         while [[ -z "$REPLY" ]]; do
             echo -ne "${YELLOW}${LABEL}: ${NC}"
@@ -239,6 +215,34 @@ prompt_password() {
             echo ""
         done
     fi
+}
+
+modern_prompt() {
+    local LABEL="$1"
+    local DEFAULT_VALUE="$2"
+    local MASKED="$3"
+    local VALUE=""
+
+    printf '\033[2J\033[H' >&2
+    printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n' >&2
+    printf '\033[38;5;141m  %s\033[0m\n\n' "$LABEL" >&2
+    if [[ "$MASKED" == true ]]; then
+        printf '  Password: ' >&2
+        IFS= read -r -s VALUE < /dev/tty
+        printf '\n' >&2
+    else
+        if [[ -n "$DEFAULT_VALUE" ]]; then
+            printf '  Value [%s]: ' "$DEFAULT_VALUE" >&2
+        else
+            printf '  Value: ' >&2
+        fi
+        IFS= read -r VALUE < /dev/tty
+    fi
+
+    if [[ -z "$VALUE" && -n "$DEFAULT_VALUE" ]]; then
+        VALUE="$DEFAULT_VALUE"
+    fi
+    printf '%s' "$VALUE"
 }
 
 modern_select() {
@@ -308,8 +312,7 @@ select_option() {
         return 1
     fi
 
-    # The modern picker is dependency-free and works well over SSH.  The
-    # input/password helpers still use whiptail when available.
+    # The modern picker is dependency-free and works well over SSH.
     exec 3<> /dev/tty
     modern_select "$LABEL" "${OPTIONS[@]}"
     local RESULT=$?
@@ -319,12 +322,12 @@ select_option() {
 
 show_message() {
     local MESSAGE="$1"
-    if [[ -n "$TUI_BIN" ]]; then
-        if [[ "$TUI_BIN" == "whiptail" ]]; then
-            whiptail --title "NKP Deployment" --msgbox "$MESSAGE" 12 90
-        else
-            dialog --title "NKP Deployment" --msgbox "$MESSAGE" 12 90
-        fi
+    if [[ -c /dev/tty ]]; then
+        printf '\033[2J\033[H' >&2
+        printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n\n' >&2
+        printf '\033[1;31m  ERROR\033[0m\n\n  %b\n\n' "$MESSAGE" >&2
+        printf '  Press Enter to continue... ' >&2
+        IFS= read -r _ < /dev/tty
     else
         echo -e "${MESSAGE}"
         read -r -p "Press Enter to continue..." _
@@ -853,12 +856,8 @@ echo -e "${YELLOW}(Press Enter to use defaults)${NC}"
 echo -e "${YELLOW}=======================================================${NC}"
 
 # License tier — affects default worker count
-if [[ -n "$TUI_BIN" ]]; then
-    LICENSE_SELECTION=$(select_option "Do you plan to license NKP Pro/Ultimate?" "No" "Yes") || exit 1
-    [[ "$LICENSE_SELECTION" == "2" ]] && NKP_LICENSED="y" || NKP_LICENSED="n"
-else
-    read -p "Do you plan to license NKP Pro/Ultimate? (y/N): " NKP_LICENSED
-fi
+LICENSE_SELECTION=$(select_option "Do you plan to license NKP Pro/Ultimate?" "No" "Yes") || exit 1
+[[ "$LICENSE_SELECTION" == "2" ]] && NKP_LICENSED="y" || NKP_LICENSED="n"
 if [[ "$NKP_LICENSED" =~ ^[Yy]$ ]]; then
     LICENSE_DEFAULT=4
 else
@@ -869,13 +868,8 @@ fi
 CP_REPLICAS_DEFAULT=$(get_default "cp_replicas")
 CP_REPLICAS_DEFAULT=${CP_REPLICAS_DEFAULT:-1}
 while true; do
-    if [[ -n "$TUI_BIN" ]]; then
-        prompt_text "Control Plane Replicas (1, 3, or 5)" "$CP_REPLICAS_DEFAULT" CP_REPLICAS
-        CP_REPLICAS="$REPLY"
-    else
-        read -p "Control Plane Replicas (1, 3, or 5 - default: ${CP_REPLICAS_DEFAULT}): " CP_REPLICAS
-        CP_REPLICAS=${CP_REPLICAS:-$CP_REPLICAS_DEFAULT}
-    fi
+    prompt_text "Control Plane Replicas (1, 3, or 5)" "$CP_REPLICAS_DEFAULT" CP_REPLICAS
+    CP_REPLICAS="$REPLY"
     if [[ "$CP_REPLICAS" =~ ^[135]$ ]]; then
         break
     fi
@@ -886,13 +880,8 @@ done
 WORKER_REPLICAS_DEFAULT=$(get_default "worker_replicas")
 WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-$LICENSE_DEFAULT}
 while true; do
-    if [[ -n "$TUI_BIN" ]]; then
-        prompt_text "Worker Replicas (1-10)" "$WORKER_REPLICAS_DEFAULT" WORKER_REPLICAS
-        WORKER_REPLICAS="$REPLY"
-    else
-        read -p "Worker Replicas (1-10, default: ${WORKER_REPLICAS_DEFAULT}): " WORKER_REPLICAS
-        WORKER_REPLICAS=${WORKER_REPLICAS:-$WORKER_REPLICAS_DEFAULT}
-    fi
+    prompt_text "Worker Replicas (1-10)" "$WORKER_REPLICAS_DEFAULT" WORKER_REPLICAS
+    WORKER_REPLICAS="$REPLY"
     if [[ "$WORKER_REPLICAS" =~ ^([1-9]|10)$ ]]; then
         break
     fi
@@ -997,25 +986,14 @@ while true; do
     if [[ "$VM_IMAGE_VALID" == true ]]; then
         echo -e "${GREEN}  ✔  Image '${VM_IMAGE}' found on Prism Central.${NC}"
         echo ""
-        if [[ -n "$TUI_BIN" ]]; then
-            if [[ "$TUI_BIN" == "whiptail" ]]; then
-                whiptail --title "NKP Deployment" --yesno "Proceed with deployment using the values shown above?" 10 78 || exit 0
-            else
-                dialog --title "NKP Deployment" --yesno "Proceed with deployment using the values shown above?" 10 78 || exit 0
-            fi
-        else
-            read -p "Proceed with deployment? (Y/n) > " CONFIRM
-            [[ "$CONFIRM" =~ ^[Nn]$ ]] && exit 0
-        fi
+        prompt_text "Proceed with deployment? Enter Y or N" "Y" CONFIRM
+        CONFIRM="$REPLY"
+        [[ "$CONFIRM" =~ ^[Nn]$ ]] && exit 0
         break
     else
         # validate_vm_image already printed the candidate list
-        if [[ -n "$TUI_BIN" ]]; then
-            prompt_text "Enter the correct VM Image Name" "$VM_IMAGE" NEW_IMAGE
-            NEW_IMAGE="$REPLY"
-        else
-            read -p "Enter correct VM Image Name: " NEW_IMAGE
-        fi
+        prompt_text "Enter the correct VM Image Name" "$VM_IMAGE" NEW_IMAGE
+        NEW_IMAGE="$REPLY"
         if [[ -n "$NEW_IMAGE" ]]; then
             VM_IMAGE="$NEW_IMAGE"
             save_defaults
