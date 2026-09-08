@@ -105,18 +105,17 @@ get_default() {
     fi
 }
 
-# Persist the connection fields as soon as they have been validated so a
-# later failure does not require re-entering them. Passwords are never saved.
-save_connection_defaults() {
+# Persist one validated connection field immediately so a later failure does
+# not require re-entering it. Passwords are never saved.
+save_connection_default() {
+    local KEY="$1"
+    local VALUE="$2"
     local EXISTING='{}'
     if [[ -f "$DEFAULTS_FILE" ]]; then
         EXISTING=$(jq -c . "$DEFAULTS_FILE" 2>/dev/null || printf '{}')
     fi
-    jq --arg pc_endpoint "$PC_ENDPOINT" \
-        --arg nutanix_user "$NUTANIX_USER" \
-        '.
-         + (if $pc_endpoint != "" then {pc_endpoint: $pc_endpoint} else {} end)
-         + (if $nutanix_user != "" then {nutanix_user: $nutanix_user} else {} end)' \
+    jq --arg key "$KEY" --arg value "$VALUE" \
+        '.[$key] = $value' \
         <<< "$EXISTING" > "$DEFAULTS_FILE"
 }
 
@@ -341,7 +340,10 @@ modern_prompt() {
     frame_prompt_header
     local INPUT_TEXT="  ${LABEL}: "
     local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
-    [[ "$MASKED" == true ]] && INPUT_TEXT="  Password: " && INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    if [[ "$MASKED" == true ]]; then
+        INPUT_TEXT="  Password: "
+        INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    fi
     frame_row "$INPUT_TEXT"
     # Save the cursor on the actual input row instead of relying on a
     # terminal-specific absolute row calculation.
@@ -357,6 +359,8 @@ modern_prompt() {
     if [[ "$MASKED" == true ]]; then
         IFS= read -r -s VALUE < /dev/tty
         printf '\n' >&2
+    elif [[ -n "$DEFAULT_VALUE" ]]; then
+        IFS= read -r -e -i "$DEFAULT_VALUE" VALUE < /dev/tty
     else
         IFS= read -r VALUE < /dev/tty
     fi
@@ -1112,7 +1116,7 @@ while true; do
     prompt_text "Prism Central Endpoint (IPv4 address)" "$PC_ENDPOINT_DEFAULT" PC_ENDPOINT ip
     PC_ENDPOINT="$REPLY"
     if validate_ipv4 "$PC_ENDPOINT"; then
-        save_connection_defaults
+        save_connection_default "pc_endpoint" "$PC_ENDPOINT"
         break
     fi
     show_message "Enter a valid Prism Central IPv4 address."
@@ -1124,7 +1128,7 @@ while true; do
     prompt_text "Prism Username" "$NUTANIX_USER_DEFAULT" NUTANIX_USER
     NUTANIX_USER="$REPLY"
     if [[ -n "$NUTANIX_USER" ]]; then
-        save_connection_defaults
+        save_connection_default "nutanix_user" "$NUTANIX_USER"
         break
     fi
     show_message "Prism username cannot be empty."
