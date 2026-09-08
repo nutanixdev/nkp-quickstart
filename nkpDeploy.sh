@@ -35,7 +35,7 @@ call_curl_v4() {
 
     case "$REQUEST" in
         GET)
-            RESPONSE=$(curl -s -k -w '####%{response_code}' \
+            RESPONSE=$(curl -s -k --connect-timeout 10 --max-time 60 -w '####%{response_code}' \
                 -u "$PCADMIN:$PCPASSWD" \
                 --header 'accept: application/json' \
                 -H 'X-Nutanix-Client-Type: ui' \
@@ -43,7 +43,7 @@ call_curl_v4() {
                 --url "${URL}${APIURL}")
             ;;
         POST)
-            RESPONSE=$(curl -s -k -w '####%{response_code}' \
+            RESPONSE=$(curl -s -k --connect-timeout 10 --max-time 60 -w '####%{response_code}' \
                 -u "$PCADMIN:$PCPASSWD" \
                 --header 'accept: application/json' \
                 -H 'X-Nutanix-Client-Type: ui' \
@@ -281,6 +281,13 @@ modern_select() {
             "$((CURRENT + 1))" "${#OPTIONS[@]}" >&2
 
         IFS= read -r -s -n 1 -u 3 KEY < /dev/tty
+        # Bash may return an empty variable for Enter when read is operating
+        # in non-canonical mode. Treat that the same as a newline.
+        if [[ -z "$KEY" ]]; then
+            stty "$OLD_STTY" < /dev/tty
+            printf '%s' "$((CURRENT + 1))"
+            return 0
+        fi
         case "$KEY" in
             $'\x1b')
                 IFS= read -r -s -n 2 -u 3 -t 0.1 KEY2 < /dev/tty || true
