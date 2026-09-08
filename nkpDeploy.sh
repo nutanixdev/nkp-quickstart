@@ -314,13 +314,17 @@ modern_prompt() {
     local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
     [[ "$MASKED" == true ]] && INPUT_TEXT="  Password: " && INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
     frame_row "$INPUT_TEXT"
+    # Save the cursor on the actual input row instead of relying on a
+    # terminal-specific absolute row calculation.
+    printf '\033[1A\033[%dG\033[s' "$INPUT_COLUMN" >&2
+    printf '\033[1B\033[1G' >&2
     local CONTENT_ROWS=$((SCREEN_ROWS - 7))
     local INDEX
     for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
         frame_row ""
     done
     frame_footer "Enter submit   Ctrl-C exit"
-    printf '\033[4;%dH' "$INPUT_COLUMN" >&2
+    printf '\033[u' >&2
     if [[ "$MASKED" == true ]]; then
         IFS= read -r -s VALUE < /dev/tty
         printf '\n' >&2
@@ -615,13 +619,17 @@ modern_host_prompt() {
     local INPUT_TEXT="  ${LABEL}: ${FIXED_PREFIX}"
     local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
     frame_row "$INPUT_TEXT"
+    # Save the cursor on the actual input row instead of relying on a
+    # terminal-specific absolute row calculation.
+    printf '\033[1A\033[%dG\033[s' "$INPUT_COLUMN" >&2
+    printf '\033[1B\033[1G' >&2
     local CONTENT_ROWS=$((SCREEN_ROWS - 7))
     local INDEX
     for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
         frame_row ""
     done
     frame_footer "Type ${HOST_OCTETS} host ${OCTET_WORD}   Enter submit   Ctrl-C exit"
-    printf '\033[4;%dH' "$INPUT_COLUMN" >&2
+    printf '\033[u' >&2
     IFS= read -r VALUE < /dev/tty
     [[ -z "$VALUE" && -n "$DEFAULT_SUFFIX" ]] && VALUE="$DEFAULT_SUFFIX"
     printf '%s' "$VALUE"
