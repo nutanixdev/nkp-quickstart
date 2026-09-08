@@ -218,25 +218,82 @@ prompt_password() {
     fi
 }
 
+frame_setup() {
+    SCREEN_COLS=$(tput cols 2>/dev/null || echo 80)
+    SCREEN_ROWS=$(tput lines 2>/dev/null || echo 24)
+    [[ "$SCREEN_COLS" =~ ^[0-9]+$ ]] || SCREEN_COLS=80
+    [[ "$SCREEN_ROWS" =~ ^[0-9]+$ ]] || SCREEN_ROWS=24
+    (( SCREEN_COLS < 60 )) && SCREEN_COLS=60
+    (( SCREEN_ROWS < 16 )) && SCREEN_ROWS=16
+    SCREEN_INNER=$((SCREEN_COLS - 2))
+    printf -v FRAME_LINE '%*s' "$SCREEN_INNER" ''
+    FRAME_LINE="${FRAME_LINE// /─}"
+}
+
+frame_row() {
+    local TEXT="$1"
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
+    printf '%b│%b%-*s%b│%b\n' "$PURPLE" "$RESET" "$SCREEN_INNER" "$TEXT" "$PURPLE" "$RESET" >&2
+}
+
+frame_header() {
+    local LABEL="$1"
+    local PURPLE='\033[38;5;141m'
+    local WHITE='\033[97m'
+    local RESET='\033[0m'
+    printf '\033[2J\033[H' >&2
+    printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    frame_row "  NKP DEPLOYMENT"
+    frame_row "  $LABEL"
+    printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+}
+
+frame_footer() {
+    local CONTROLS="$1"
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    frame_row "  Controls: $CONTROLS"
+    printf '%b╰%s╯%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+}
+
+show_progress() {
+    local MESSAGE="$1"
+    frame_setup
+    frame_header "$MESSAGE"
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local INDEX
+    for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Please wait...   Ctrl-C exit"
+}
+
 modern_prompt() {
     local LABEL="$1"
     local DEFAULT_VALUE="$2"
     local MASKED="$3"
     local VALUE=""
 
-    printf '\033[2J\033[H' >&2
-    printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n' >&2
-    printf '\033[38;5;141m  %s\033[0m\n\n' "$LABEL" >&2
+    frame_setup
+    frame_header "$LABEL"
+    local INPUT_TEXT="  ${LABEL}: "
+    local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    [[ "$MASKED" == true ]] && INPUT_TEXT="  Password: " && INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    frame_row "$INPUT_TEXT"
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local INDEX
+    for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Enter submit   Ctrl-C exit"
+    printf '\033[5;%dH' "$INPUT_COLUMN" >&2
     if [[ "$MASKED" == true ]]; then
-        printf '  Password: ' >&2
         IFS= read -r -s VALUE < /dev/tty
         printf '\n' >&2
     else
-        if [[ -n "$DEFAULT_VALUE" ]]; then
-            printf '  Value [%s]: ' "$DEFAULT_VALUE" >&2
-        else
-            printf '  Value: ' >&2
-        fi
         IFS= read -r VALUE < /dev/tty
     fi
 
@@ -251,22 +308,20 @@ modern_select() {
     shift
     local OPTIONS=("$@")
     local CURRENT=0 OFFSET=0 KEY KEY2
-    local VISIBLE=12
     local OLD_STTY
-    local MENU_WIDTH=72
-    local MENU_LINE='────────────────────────────────────────────────────────────────────────'
+    local VISIBLE
 
     [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
     [[ -c /dev/tty ]] || return 1
 
     OLD_STTY=$(stty -g < /dev/tty) || return 1
     stty -echo -icanon min 1 time 0 < /dev/tty || return 1
+    frame_setup
+    VISIBLE=$((SCREEN_ROWS - 8))
+    (( VISIBLE < 3 )) && VISIBLE=3
 
     while true; do
-        printf '\033[2J\033[H' >&2
-        printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n' >&2
-        printf '\033[38;5;141m  %s\033[0m\n\n' "$LABEL" >&2
-        printf '\033[38;5;141m  ╭%s╮\033[0m\n' "$MENU_LINE" >&2
+        frame_header "$LABEL"
 
         (( CURRENT < OFFSET )) && OFFSET=$CURRENT
         (( CURRENT >= OFFSET + VISIBLE )) && OFFSET=$((CURRENT - VISIBLE + 1))
@@ -276,18 +331,18 @@ modern_select() {
         local INDEX
         for ((INDEX=OFFSET; INDEX<END; INDEX++)); do
             local DISPLAY_VALUE="${OPTIONS[$INDEX]}"
-            (( ${#DISPLAY_VALUE} > MENU_WIDTH - 6 )) && DISPLAY_VALUE="${DISPLAY_VALUE:0:MENU_WIDTH-9}..."
+            (( ${#DISPLAY_VALUE} > SCREEN_INNER - 6 )) && DISPLAY_VALUE="${DISPLAY_VALUE:0:SCREEN_INNER-9}..."
             if (( INDEX == CURRENT )); then
-                printf '\033[38;5;141m  │\033[0m\033[48;5;99m\033[97m  > %-*s\033[0m\033[38;5;141m│\033[0m\n' \
-                    "$((MENU_WIDTH - 4))" "$DISPLAY_VALUE" >&2
+                printf '\033[48;5;99m\033[97m│%-*s│\033[0m\n' \
+                    "$SCREEN_INNER" "  > $DISPLAY_VALUE" >&2
             else
-                printf '\033[38;5;141m  │\033[0m    %-*s\033[38;5;141m│\033[0m\n' \
-                    "$((MENU_WIDTH - 4))" "$DISPLAY_VALUE" >&2
+                frame_row "    $DISPLAY_VALUE"
             fi
         done
-        printf '\033[38;5;141m  ╰%s╯\033[0m\n' "$MENU_LINE" >&2
-        printf '\033[38;5;141m  %d/%d\033[0m   ↑/↓ navigate   Enter select   q quit\n' \
-            "$((CURRENT + 1))" "${#OPTIONS[@]}" >&2
+        for ((INDEX=END; INDEX<OFFSET+VISIBLE; INDEX++)); do
+            frame_row ""
+        done
+        frame_footer "$((CURRENT + 1))/${#OPTIONS[@]}   ↑/↓ navigate   Enter select   q exit"
 
         IFS= read -r -s -n 1 -u 3 KEY < /dev/tty
         # Bash may return an empty variable for Enter when read is operating
@@ -339,10 +394,20 @@ select_option() {
 show_message() {
     local MESSAGE="$1"
     if [[ -c /dev/tty ]]; then
-        printf '\033[2J\033[H' >&2
-        printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n\n' >&2
-        printf '\033[1;31m  ERROR\033[0m\n\n  %b\n\n' "$MESSAGE" >&2
-        printf '  Press Enter to continue... ' >&2
+        frame_setup
+        frame_header "Message"
+        local MESSAGE_LINES=0
+        local MESSAGE_LINE
+        while IFS= read -r MESSAGE_LINE; do
+            frame_row "  $MESSAGE_LINE"
+            MESSAGE_LINES=$((MESSAGE_LINES + 1))
+        done <<< "$MESSAGE"
+        local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+        local INDEX
+        for ((INDEX=MESSAGE_LINES; INDEX<CONTENT_ROWS; INDEX++)); do
+            frame_row ""
+        done
+        frame_footer "Enter continue   Ctrl-C exit"
         IFS= read -r _ < /dev/tty
     else
         echo -e "${MESSAGE}"
@@ -450,15 +515,18 @@ modern_host_prompt() {
     local VALUE="" OCTET_WORD="octet"
     (( HOST_OCTETS != 1 )) && OCTET_WORD="octets"
 
-    printf '\033[2J\033[H' >&2
-    printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n' >&2
-    printf '\033[38;5;141m  %s\033[0m\n\n' "$LABEL" >&2
-    printf '  Fixed network prefix: \033[1;37m%s\033[0m\n' "${FIXED_PREFIX:-<none>}" >&2
-    if [[ -n "$DEFAULT_SUFFIX" ]]; then
-        printf '  Enter %s host %s [%s]: ' "$HOST_OCTETS" "$OCTET_WORD" "$DEFAULT_SUFFIX" >&2
-    else
-        printf '  Enter %s host %s: ' "$HOST_OCTETS" "$OCTET_WORD" >&2
-    fi
+    frame_setup
+    frame_header "$LABEL"
+    local INPUT_TEXT="  ${LABEL}: ${FIXED_PREFIX}"
+    local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    frame_row "$INPUT_TEXT"
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local INDEX
+    for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Type ${HOST_OCTETS} host ${OCTET_WORD}   Enter submit   Ctrl-C exit"
+    printf '\033[5;%dH' "$INPUT_COLUMN" >&2
     IFS= read -r VALUE < /dev/tty
     [[ -z "$VALUE" && -n "$DEFAULT_SUFFIX" ]] && VALUE="$DEFAULT_SUFFIX"
     printf '%s' "$VALUE"
@@ -541,23 +609,19 @@ summary_row() {
     local PURPLE='\033[38;5;141m'
     local DIM='\033[38;5;245m'
     local RESET='\033[0m'
+    local LABEL_WIDTH="${SUMMARY_LABEL_WIDTH:-26}"
+    local VALUE_WIDTH="${SUMMARY_VALUE_WIDTH:-41}"
     VALUE="${VALUE//$'\n'/ }"
-    (( ${#VALUE} > 41 )) && VALUE="${VALUE:0:38}..."
-    printf '%b│%b %b%-28s%b │ %-41s %b│%b\n' "$PURPLE" "$RESET" "$DIM" "$LABEL" "$RESET" "$VALUE" "$PURPLE" "$RESET"
+    (( ${#VALUE} > VALUE_WIDTH )) && VALUE="${VALUE:0:VALUE_WIDTH-3}..."
+    printf '%b│%b %b%-*s%b │ %-*s %b│%b\n' \
+        "$PURPLE" "$RESET" "$DIM" "$LABEL_WIDTH" "$LABEL" "$RESET" "$VALUE_WIDTH" "$VALUE" "$PURPLE" "$RESET"
 }
 
 render_final_summary() {
-    local PURPLE='\033[38;5;141m'
-    local WHITE='\033[97m'
-    local DIM='\033[38;5;245m'
-    local RESET='\033[0m'
-    local LINE='──────────────────────────────────────────────────────────────────────────────'
-
-    printf '\033[2J\033[H'
-    printf '%b╭%s╮%b\n' "$PURPLE" "$LINE" "$RESET"
-    printf '%b│%b %bNKP DEPLOYMENT SUMMARY%b%*s%b│%b\n' \
-        "$PURPLE" "$RESET" "$WHITE" "$RESET" 48 "" "$PURPLE" "$RESET"
-    printf '%b├%s┤%b\n' "$PURPLE" "$LINE" "$RESET"
+    frame_setup
+    SUMMARY_LABEL_WIDTH=26
+    SUMMARY_VALUE_WIDTH=$((SCREEN_INNER - SUMMARY_LABEL_WIDTH - 5))
+    frame_header "Final deployment summary"
     summary_row "NKP Version" "$VERSION_WITH_V"
     summary_row "Prism Central" "$PC_ENDPOINT"
     summary_row "Prism Central Version" "$PC_RAW"
@@ -573,8 +637,13 @@ render_final_summary() {
     summary_row "Control Plane Nodes" "$CP_REPLICAS"
     summary_row "Worker Nodes" "$WORKER_REPLICAS"
     summary_row "Kubeconfig" "$KUBECONFIG"
-    printf '%b╰%s╯%b\n\n' "$PURPLE" "$LINE" "$RESET"
-    printf '%b  Controls:  [Y] deploy   [N] exit%b\n' "$DIM" "$RESET"
+    local SUMMARY_ROWS=15
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local INDEX
+    for ((INDEX=SUMMARY_ROWS; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Y deploy   N exit"
 }
 
 final_summary_confirmation() {
@@ -790,7 +859,7 @@ PCIPADDRESS="$PC_ENDPOINT"
 PCADMIN="$NUTANIX_USER"
 PCPASSWD="$NUTANIX_PASSWORD"
 
-echo -e "${CYAN}Loading AHV clusters from Prism Central...${NC}"
+show_progress "Loading AHV clusters from Prism Central"
 AHV_CLUSTER_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters?\$limit=100")
 if api_failed "$AHV_CLUSTER_RESPONSE"; then
     show_message "$(api_error_message "$AHV_CLUSTER_RESPONSE")"
@@ -818,7 +887,7 @@ SELECTED_INDEX=$(select_option "Select the AHV Cluster for the NKP nodes" "${CLU
 AHV_CLUSTER="${CLUSTER_NAMES[$((SELECTED_INDEX - 1))]}"
 AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$((SELECTED_INDEX - 1))]}"
 
-echo -e "${CYAN}Loading networks for ${AHV_CLUSTER}...${NC}"
+show_progress "Loading networks for ${AHV_CLUSTER}"
 NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0.a1/config/subnets?\$limit=100")
 if api_failed "$NETWORK_RESPONSE"; then
     # A few PC releases expose the same collection under the stable v4
@@ -881,7 +950,7 @@ SUBNET_NETWORK_IP="${SUBNET_CIDR%/*}"
 SUBNET_PREFIX_LENGTH="${SUBNET_CIDR##*/}"
 SUBNET_INPUT_PREFIX=$(network_input_prefix "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH")
 
-echo -e "${CYAN}Loading storage containers from Prism Central...${NC}"
+show_progress "Loading storage containers from Prism Central"
 STORAGE_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/storage-containers?\$limit=100")
 if api_failed "$STORAGE_RESPONSE"; then
     STORAGE_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.2/config/storage-containers?\$limit=100")
@@ -903,7 +972,7 @@ fi
 SELECTED_INDEX=$(select_option "Select the storage container for persistent volumes" "${STORAGE_NAMES[@]}") || exit 1
 STORAGE="${STORAGE_NAMES[$((SELECTED_INDEX - 1))]}"
 
-echo -e "${CYAN}Loading VM images from Prism Central...${NC}"
+show_progress "Loading VM images from Prism Central"
 IMAGE_RESPONSE=$(call_curl_v4 "GET" "/vmm/v4.0/content/images?\$limit=100")
 if api_failed "$IMAGE_RESPONSE"; then
     show_message "$(api_error_message "$IMAGE_RESPONSE")"
@@ -1010,11 +1079,6 @@ while true; do
 done
 
 # OPTIONAL: DEPLOYMENT SIZING
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${PURPLE}      OPTIONAL: Deployment Sizing${NC}"
-echo -e "${CYAN}(Select the desired values)${NC}"
-echo -e "${YELLOW}=======================================================${NC}"
-
 # License tier — affects default worker count
 LICENSE_SELECTION=$(select_option "Do you plan to license NKP Pro/Ultimate?" "No" "Yes") || exit 1
 [[ "$LICENSE_SELECTION" == "2" ]] && NKP_LICENSED="y" || NKP_LICENSED="n"
@@ -1184,12 +1248,10 @@ export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}.conf"
 # ============================================================
 VM_IMAGE_VALID=false
 while true; do
-    render_final_summary
-    printf '\033[38;5;141m  Validating VM image against Prism Central...\033[0m\n' >&2
     validate_vm_image "$VM_IMAGE"
 
     if [[ "$VM_IMAGE_VALID" == true ]]; then
-        printf '\033[38;5;46m  ✓ Image is available on Prism Central.\033[0m\n\n' >&2
+        render_final_summary
         if final_summary_confirmation; then
             break
         elif [[ $? -eq 1 ]]; then
