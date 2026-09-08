@@ -19,6 +19,21 @@ for cmd in "${REQUIRED_COMMANDS[@]}"; do
 done
 echo -e "${GREEN}--> All required dependencies verified.${NC}"
 
+# whiptail is preferred for the TUI.  dialog is also supported, and the
+# built-in bash select menu is used as a dependency-free fallback.
+TUI_BIN=""
+if command -v whiptail &> /dev/null; then
+    TUI_BIN="whiptail"
+elif command -v dialog &> /dev/null; then
+    TUI_BIN="dialog"
+fi
+
+if [[ -n "$TUI_BIN" ]]; then
+    echo -e "${GREEN}--> TUI detected: ${TUI_BIN}.${NC}"
+else
+    echo -e "${YELLOW}--> whiptail/dialog not found; using the built-in selectable menus.${NC}"
+fi
+
 # --- Defaults file sits next to the script ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULTS_FILE="${SCRIPT_DIR}/nkpDeploy_defaults.json"
@@ -146,6 +161,17 @@ get_input() {
             continue
         fi
 
+        if [[ "$MODE" == "ip" ]]; then
+            if ! validate_ipv4 "$TEMP_VAL"; then
+                echo -e "${RED}Error: Enter a valid IPv4 address.${NC}"
+                continue
+            fi
+            if [[ -n "${SUBNET_NETWORK_IP:-}" ]] && ! is_in_same_subnet "$TEMP_VAL" "$SUBNET_NETWORK_IP" "${SUBNET_PREFIX_LENGTH:-24}"; then
+                echo -e "${RED}Error: Address must be in the selected network (${SUBNET_NETWORK_IP}/${SUBNET_PREFIX_LENGTH}).${NC}"
+                continue
+            fi
+        fi
+
         if [[ "$MODE" == "range" ]]; then
             if [[ ! "$TEMP_VAL" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}-([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
                 echo -e "${RED}Error: Format must be x.x.x.x-y.y.y.y${NC}"
@@ -153,7 +179,11 @@ get_input() {
             fi
             local RANGE_START
             RANGE_START=$(echo "$TEMP_VAL" | cut -d'-' -f1)
-            if ! is_in_same_subnet "$VIP" "$RANGE_START"; then
+            if ! validate_ipv4 "$RANGE_START" || ! validate_ipv4 "${TEMP_VAL##*-}"; then
+                echo -e "${RED}Error: Enter valid IPv4 addresses in the range.${NC}"
+                continue
+            fi
+            if ! is_in_same_subnet "$VIP" "$RANGE_START" "${SUBNET_PREFIX_LENGTH:-24}"; then
                 echo -e "${RED}Error: LB Range must be in the same subnet as VIP ($VIP).${NC}"
                 continue
             fi
@@ -165,14 +195,135 @@ get_input() {
 }
 
 # ============================================================
+# TUI HELPERS
+# ============================================================
+# These helpers keep the script usable over SSH and on hosts without
+# whiptail/dialog.  REPLY is intentionally global so callers can use the
+# same helper for both TUI and plain terminal input.
+prompt_text() {
+    local LABEL="$1"
+    local DEFAULT_VALUE="$2"
+    local VAR_NAME="$3"
+    local MODE="$4"
+
+    if [[ -n "$TUI_BIN" ]]; then
+        if [[ "$TUI_BIN" == "whiptail" ]]; then
+            REPLY=$(whiptail --title "NKP Deployment" --inputbox "$LABEL" 10 78 "$DEFAULT_VALUE" 3>&1 1>&2 2>&3) || exit 0
+        else
+            REPLY=$(dialog --stdout --title "NKP Deployment" --inputbox "$LABEL" 10 78 "$DEFAULT_VALUE") || exit 0
+        fi
+    else
+        get_input "${LABEL}: " "$VAR_NAME" "$MODE"
+        REPLY="${!VAR_NAME}"
+    fi
+}
+
+prompt_password() {
+    local LABEL="$1"
+    if [[ -n "$TUI_BIN" ]]; then
+        if [[ "$TUI_BIN" == "whiptail" ]]; then
+            REPLY=$(whiptail --title "NKP Deployment" --passwordbox "$LABEL" 10 78 3>&1 1>&2 2>&3) || exit 0
+        else
+            REPLY=$(dialog --stdout --title "NKP Deployment" --passwordbox "$LABEL" 10 78) || exit 0
+        fi
+    else
+        while [[ -z "$REPLY" ]]; do
+            echo -ne "${YELLOW}${LABEL}: ${NC}"
+            read -rs REPLY
+            echo ""
+        done
+    fi
+}
+
+select_option() {
+    local LABEL="$1"
+    shift
+    local OPTIONS=("$@")
+    local SELECTED=""
+
+    if [[ ${#OPTIONS[@]} -eq 0 ]]; then
+        echo -e "${RED}ERROR: No options were returned for ${LABEL}.${NC}" >&2
+        return 1
+    fi
+
+    if [[ -n "$TUI_BIN" ]]; then
+        local MENU_ARGS=()
+        local INDEX=1
+        local OPTION
+        for OPTION in "${OPTIONS[@]}"; do
+            MENU_ARGS+=("$INDEX" "$OPTION")
+            INDEX=$((INDEX + 1))
+        done
+
+        if [[ "$TUI_BIN" == "whiptail" ]]; then
+            SELECTED=$(whiptail --title "NKP Deployment" --menu "$LABEL" 20 100 12 "${MENU_ARGS[@]}" 3>&1 1>&2 2>&3) || exit 0
+        else
+            SELECTED=$(dialog --stdout --title "NKP Deployment" --menu "$LABEL" 20 100 12 "${MENU_ARGS[@]}") || exit 0
+        fi
+    else
+        echo -e "${CYAN}${LABEL}${NC}" >&2
+        local PS3="Select an option: "
+        select OPTION in "${OPTIONS[@]}"; do
+            if [[ -n "$OPTION" ]]; then
+                SELECTED="$REPLY"
+                break
+            fi
+            echo -e "${RED}Invalid selection.${NC}"
+        done
+    fi
+
+    printf '%s' "$SELECTED"
+}
+
+show_message() {
+    local MESSAGE="$1"
+    if [[ -n "$TUI_BIN" ]]; then
+        if [[ "$TUI_BIN" == "whiptail" ]]; then
+            whiptail --title "NKP Deployment" --msgbox "$MESSAGE" 12 90
+        else
+            dialog --title "NKP Deployment" --msgbox "$MESSAGE" 12 90
+        fi
+    else
+        echo -e "${MESSAGE}"
+        read -r -p "Press Enter to continue..." _
+    fi
+}
+
+# ============================================================
 # HELPER: subnet check
 # ============================================================
 is_in_same_subnet() {
     local ip1=$1
     local ip2=$2
-    # Masks to the first 3 octets (255.255.255.0)
-    # This is typical for NKP deployments; modify if your network uses different CIDR
-    [[ "${ip1%.*}" == "${ip2%.*}" ]]
+    local prefix="${3:-${SUBNET_PREFIX_LENGTH:-24}}"
+
+    if ! validate_ipv4 "$ip1" || ! validate_ipv4 "$ip2"; then
+        return 1
+    fi
+
+    local value1 value2 mask
+    value1=$(ip2int "$ip1")
+    value2=$(ip2int "$ip2")
+    if (( prefix == 0 )); then
+        mask=0
+    else
+        mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+    fi
+    (( (value1 & mask) == (value2 & mask) ))
+}
+
+validate_ipv4() {
+    local IP="$1"
+    local OCTET
+    local COUNT=0
+    IFS='.' read -r -a OCTETS <<< "$IP"
+    [[ ${#OCTETS[@]} -eq 4 ]] || return 1
+    for OCTET in "${OCTETS[@]}"; do
+        [[ "$OCTET" =~ ^[0-9]{1,3}$ ]] || return 1
+        (( 10#$OCTET <= 255 )) || return 1
+        COUNT=$((COUNT + 1))
+    done
+    (( COUNT == 4 ))
 }
 
 # ============================================================
@@ -186,7 +337,36 @@ version_gt() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
 ip2int() {
     local a b c d
     IFS=. read -r a b c d <<< "$1"
-    echo "$(( (a << 24) + (b << 16) + (c << 8) + d ))"
+    echo "$(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))"
+}
+
+# Return a usable input prefix for the selected network.  For a /24 this is
+# the requested first-three-octets UX; for other masks the network address is
+# used as a safe starting point and the full CIDR is shown to the user.
+network_input_prefix() {
+    local IP="$1"
+    local PREFIX="$2"
+    local A B C D
+    IFS=. read -r A B C D <<< "$IP"
+    if (( PREFIX >= 24 )); then
+        echo "${A}.${B}.${C}."
+    else
+        echo "${IP}"
+    fi
+}
+
+api_failed() {
+    local BODY="$1"
+    local STATUS
+    STATUS=$(echo "$BODY" | jq -r '.httpStatus // empty' 2>/dev/null)
+    [[ -n "$STATUS" && "$STATUS" != "null" ]]
+}
+
+api_error_message() {
+    local BODY="$1"
+    local STATUS
+    STATUS=$(echo "$BODY" | jq -r '.httpStatus // "unknown"' 2>/dev/null)
+    printf 'Prism Central API request failed (HTTP %s).\n\nVerify the endpoint, credentials, and that port 9440 is reachable.' "$STATUS"
 }
 
 # ============================================================
@@ -404,23 +584,214 @@ if [[ -f "$DEFAULTS_FILE" ]]; then
 fi
 echo -e "${YELLOW}=======================================================${NC}"
 
-get_input "Prism Central Endpoint (IP): "       PC_ENDPOINT
-get_input "Prism Username: "                     NUTANIX_USER
-
-# Password — never stored, no default shown
-while [[ -z "$NUTANIX_PASSWORD" ]]; do
-    echo -ne "${YELLOW}Prism Password: ${NC}"
-    read -rs NUTANIX_PASSWORD
-    echo ""
+PC_ENDPOINT_DEFAULT=$(get_default "pc_endpoint")
+while true; do
+    prompt_text "Prism Central Endpoint (IPv4 address)" "$PC_ENDPOINT_DEFAULT" PC_ENDPOINT ip
+    PC_ENDPOINT="$REPLY"
+    if validate_ipv4 "$PC_ENDPOINT"; then
+        break
+    fi
+    show_message "Enter a valid Prism Central IPv4 address."
+    PC_ENDPOINT_DEFAULT=""
 done
 
-get_input "NKP Cluster Name (lowercase only): " CLUSTER_NAME "lowercase"
-get_input "Control Plane VIP: "                  VIP
-get_input "VM Image Name (.qcow2): "             VM_IMAGE
-get_input "AHV Cluster Name: "                   AHV_CLUSTER
-get_input "Network Name: "                       NETWORK
-get_input "Storage Container: "                  STORAGE "" "SelfServiceContainer"
-get_input "LB IP Range (x.x.x.x-y.y.y.y): "      LB_RANGE "range"
+NUTANIX_USER_DEFAULT=$(get_default "nutanix_user")
+while true; do
+    prompt_text "Prism Username" "$NUTANIX_USER_DEFAULT" NUTANIX_USER
+    NUTANIX_USER="$REPLY"
+    if [[ -n "$NUTANIX_USER" ]]; then
+        break
+    fi
+    show_message "Prism username cannot be empty."
+    NUTANIX_USER_DEFAULT=""
+done
+
+# Password — never stored, no default shown.
+NUTANIX_PASSWORD=""
+prompt_password "Prism Password"
+NUTANIX_PASSWORD="$REPLY"
+
+# Set v4 API credentials immediately so the remaining fields can be selected
+# from Prism Central rather than typed by hand.
+PCIPADDRESS="$PC_ENDPOINT"
+PCADMIN="$NUTANIX_USER"
+PCPASSWD="$NUTANIX_PASSWORD"
+
+echo -e "${CYAN}Loading AHV clusters from Prism Central...${NC}"
+AHV_CLUSTER_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters?\$limit=100")
+if api_failed "$AHV_CLUSTER_RESPONSE"; then
+    show_message "$(api_error_message "$AHV_CLUSTER_RESPONSE")"
+    exit 1
+fi
+
+CLUSTER_NAMES=()
+CLUSTER_IDS=()
+while IFS=$'\t' read -r CLUSTER_NAME_ITEM CLUSTER_ID_ITEM; do
+    [[ -z "$CLUSTER_NAME_ITEM" ]] && continue
+    CLUSTER_NAMES+=("$CLUSTER_NAME_ITEM")
+    CLUSTER_IDS+=("$CLUSTER_ID_ITEM")
+done < <(echo "$AHV_CLUSTER_RESPONSE" | jq -r '
+    .data[]?
+    | select(((.config.clusterFunction // []) | index("PRISM_CENTRAL")) == null)
+    | [(.name // ""), (.extId // "")]
+    | @tsv' 2>/dev/null)
+
+if [[ ${#CLUSTER_NAMES[@]} -eq 0 ]]; then
+    show_message "No AHV clusters were returned by Prism Central.\n\nConfirm that the target AHV cluster is registered with this Prism Central and that the account can view it."
+    exit 1
+fi
+
+SELECTED_INDEX=$(select_option "Select the AHV Cluster for the NKP nodes" "${CLUSTER_NAMES[@]}") || exit 1
+AHV_CLUSTER="${CLUSTER_NAMES[$((SELECTED_INDEX - 1))]}"
+AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$((SELECTED_INDEX - 1))]}"
+
+echo -e "${CYAN}Loading networks for ${AHV_CLUSTER}...${NC}"
+NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0.a1/config/subnets?\$limit=100")
+if api_failed "$NETWORK_RESPONSE"; then
+    show_message "$(api_error_message "$NETWORK_RESPONSE")"
+    exit 1
+fi
+
+NETWORK_NAMES_ALL=()
+NETWORK_CIDRS_ALL=()
+NETWORK_NAMES_MATCHED=()
+NETWORK_CIDRS_MATCHED=()
+while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_CLUSTER_ID_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM NETWORK_TYPE_ITEM; do
+    [[ -z "$NETWORK_NAME_ITEM" || -z "$NETWORK_IP_ITEM" || -z "$NETWORK_PREFIX_ITEM" ]] && continue
+    [[ ! "$NETWORK_PREFIX_ITEM" =~ ^[0-9]+$ || "$NETWORK_PREFIX_ITEM" -gt 32 ]] && continue
+    NETWORK_NAMES_ALL+=("$NETWORK_NAME_ITEM")
+    NETWORK_CIDRS_ALL+=("${NETWORK_IP_ITEM}/${NETWORK_PREFIX_ITEM}")
+    if [[ -n "$AHV_CLUSTER_EXT_ID" && "$NETWORK_CLUSTER_ID_ITEM" == "$AHV_CLUSTER_EXT_ID" ]]; then
+        NETWORK_NAMES_MATCHED+=("$NETWORK_NAME_ITEM")
+        NETWORK_CIDRS_MATCHED+=("${NETWORK_IP_ITEM}/${NETWORK_PREFIX_ITEM}")
+    fi
+done < <(echo "$NETWORK_RESPONSE" | jq -r '
+    .data[]?
+    | [
+        (.name // ""),
+        (if (.clusterReference | type) == "object" then (.clusterReference.extId // "") else (.clusterReference // "") end),
+        (.ipConfig[0].ipv4.ipSubnet.ip.value // ""),
+        (.ipConfig[0].ipv4.ipSubnet.prefixLength // ""),
+        (.subnetType // "")
+      ]
+    | @tsv' 2>/dev/null)
+
+# Some PC versions omit clusterReference from the list response. If there
+# were no exact matches, retain all usable subnets and let the user choose.
+if [[ ${#NETWORK_NAMES_MATCHED[@]} -gt 0 ]]; then
+    NETWORK_NAMES=("${NETWORK_NAMES_MATCHED[@]}")
+    NETWORK_CIDRS=("${NETWORK_CIDRS_MATCHED[@]}")
+else
+    NETWORK_NAMES=("${NETWORK_NAMES_ALL[@]}")
+    NETWORK_CIDRS=("${NETWORK_CIDRS_ALL[@]}")
+fi
+
+if [[ ${#NETWORK_NAMES[@]} -eq 0 ]]; then
+    show_message "No usable IPv4 AHV networks were returned by Prism Central.\n\nThe selected network must expose an IPv4 subnet and prefix length through the Networking v4 API."
+    exit 1
+fi
+
+NETWORK_LABELS=()
+for ((INDEX=0; INDEX<${#NETWORK_NAMES[@]}; INDEX++)); do
+    NETWORK_LABELS+=("${NETWORK_NAMES[$INDEX]} [${NETWORK_CIDRS[$INDEX]}]")
+done
+SELECTED_INDEX=$(select_option "Select the AHV Network / subnet" "${NETWORK_LABELS[@]}") || exit 1
+NETWORK_INDEX=$((SELECTED_INDEX - 1))
+NETWORK="${NETWORK_NAMES[$NETWORK_INDEX]}"
+SUBNET_CIDR="${NETWORK_CIDRS[$NETWORK_INDEX]}"
+SUBNET_NETWORK_IP="${SUBNET_CIDR%/*}"
+SUBNET_PREFIX_LENGTH="${SUBNET_CIDR##*/}"
+SUBNET_INPUT_PREFIX=$(network_input_prefix "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH")
+
+echo -e "${CYAN}Loading storage containers from Prism Central...${NC}"
+STORAGE_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/storage-containers?\$limit=100")
+if api_failed "$STORAGE_RESPONSE"; then
+    STORAGE_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.2/config/storage-containers?\$limit=100")
+fi
+if api_failed "$STORAGE_RESPONSE"; then
+    show_message "$(api_error_message "$STORAGE_RESPONSE")"
+    exit 1
+fi
+
+STORAGE_NAMES=()
+while IFS= read -r STORAGE_NAME_ITEM; do
+    [[ -z "$STORAGE_NAME_ITEM" ]] && continue
+    STORAGE_NAMES+=("$STORAGE_NAME_ITEM")
+done < <(echo "$STORAGE_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sort -fu)
+if [[ ${#STORAGE_NAMES[@]} -eq 0 ]]; then
+    show_message "No storage containers were returned by Prism Central."
+    exit 1
+fi
+SELECTED_INDEX=$(select_option "Select the storage container for persistent volumes" "${STORAGE_NAMES[@]}") || exit 1
+STORAGE="${STORAGE_NAMES[$((SELECTED_INDEX - 1))]}"
+
+echo -e "${CYAN}Loading VM images from Prism Central...${NC}"
+IMAGE_RESPONSE=$(call_curl_v4 "GET" "/vmm/v4.0/content/images?\$limit=100")
+if api_failed "$IMAGE_RESPONSE"; then
+    show_message "$(api_error_message "$IMAGE_RESPONSE")"
+    exit 1
+fi
+
+IMAGE_NAMES=()
+while IFS= read -r IMAGE_NAME_ITEM; do
+    [[ -z "$IMAGE_NAME_ITEM" ]] && continue
+    IMAGE_NAMES+=("$IMAGE_NAME_ITEM")
+done < <(echo "$IMAGE_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sort -fu)
+if [[ ${#IMAGE_NAMES[@]} -eq 0 ]]; then
+    show_message "No VM images were returned by Prism Central.\n\nUpload the NKP node image to Prism Central before starting the deployment."
+    exit 1
+fi
+SELECTED_INDEX=$(select_option "Select the VM image for NKP nodes" "${IMAGE_NAMES[@]}") || exit 1
+VM_IMAGE="${IMAGE_NAMES[$((SELECTED_INDEX - 1))]}"
+
+CLUSTER_NAME_DEFAULT=$(get_default "cluster_name")
+while true; do
+    prompt_text "NKP Cluster Name (lowercase only)" "$CLUSTER_NAME_DEFAULT" CLUSTER_NAME lowercase
+    CLUSTER_NAME="$REPLY"
+    if [[ -n "$CLUSTER_NAME" && ! "$CLUSTER_NAME" =~ [A-Z] ]]; then
+        break
+    fi
+    show_message "Cluster name cannot be empty and must contain lowercase characters only."
+    CLUSTER_NAME_DEFAULT=""
+done
+
+VIP_DEFAULT=$(get_default "vip")
+if [[ -z "$VIP_DEFAULT" ]] || ! validate_ipv4 "$VIP_DEFAULT" || ! is_in_same_subnet "$VIP_DEFAULT" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
+    VIP_DEFAULT="$SUBNET_INPUT_PREFIX"
+fi
+while true; do
+    prompt_text "Control Plane VIP (network ${SUBNET_CIDR})" "$VIP_DEFAULT" VIP ip
+    VIP="$REPLY"
+    if validate_ipv4 "$VIP" && is_in_same_subnet "$VIP" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
+        break
+    fi
+    show_message "The Control Plane VIP must be a valid address inside ${SUBNET_CIDR}."
+    VIP_DEFAULT="$SUBNET_INPUT_PREFIX"
+done
+
+LB_SAVED=$(get_default "lb_range")
+LB_START_DEFAULT="${LB_SAVED%%-*}"
+LB_END_DEFAULT="${LB_SAVED##*-}"
+if [[ -z "$LB_SAVED" || "$LB_SAVED" == "$LB_START_DEFAULT" ]]; then
+    LB_START_DEFAULT="${SUBNET_INPUT_PREFIX}100"
+    LB_END_DEFAULT="${SUBNET_INPUT_PREFIX}110"
+fi
+while true; do
+    prompt_text "Load Balancer range start IP (network ${SUBNET_CIDR})" "$LB_START_DEFAULT" LB_START ip
+    LB_START="$REPLY"
+    prompt_text "Load Balancer range end IP (network ${SUBNET_CIDR})" "$LB_END_DEFAULT" LB_END ip
+    LB_END="$REPLY"
+    if validate_ipv4 "$LB_START" && validate_ipv4 "$LB_END" && \
+       is_in_same_subnet "$LB_START" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH" && \
+       is_in_same_subnet "$LB_END" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH" && \
+       (( $(ip2int "$LB_START") <= $(ip2int "$LB_END") )); then
+        LB_RANGE="${LB_START}-${LB_END}"
+        break
+    fi
+    show_message "The Load Balancer range must contain valid, ordered IP addresses inside ${SUBNET_CIDR}."
+    LB_START_DEFAULT="${SUBNET_INPUT_PREFIX}100"
+    LB_END_DEFAULT="${SUBNET_INPUT_PREFIX}110"
+done
 
 # OPTIONAL: DEPLOYMENT SIZING
 echo -e "${YELLOW}=======================================================${NC}"
@@ -429,7 +800,12 @@ echo -e "${YELLOW}(Press Enter to use defaults)${NC}"
 echo -e "${YELLOW}=======================================================${NC}"
 
 # License tier — affects default worker count
-read -p "Do you plan to license NKP Pro/Ultimate? (y/N): " NKP_LICENSED
+if [[ -n "$TUI_BIN" ]]; then
+    LICENSE_SELECTION=$(select_option "Do you plan to license NKP Pro/Ultimate?" "No" "Yes") || exit 1
+    [[ "$LICENSE_SELECTION" == "2" ]] && NKP_LICENSED="y" || NKP_LICENSED="n"
+else
+    read -p "Do you plan to license NKP Pro/Ultimate? (y/N): " NKP_LICENSED
+fi
 if [[ "$NKP_LICENSED" =~ ^[Yy]$ ]]; then
     LICENSE_DEFAULT=4
 else
@@ -440,8 +816,13 @@ fi
 CP_REPLICAS_DEFAULT=$(get_default "cp_replicas")
 CP_REPLICAS_DEFAULT=${CP_REPLICAS_DEFAULT:-1}
 while true; do
-    read -p "Control Plane Replicas (1, 3, or 5 - default: ${CP_REPLICAS_DEFAULT}): " CP_REPLICAS
-    CP_REPLICAS=${CP_REPLICAS:-$CP_REPLICAS_DEFAULT}
+    if [[ -n "$TUI_BIN" ]]; then
+        prompt_text "Control Plane Replicas (1, 3, or 5)" "$CP_REPLICAS_DEFAULT" CP_REPLICAS
+        CP_REPLICAS="$REPLY"
+    else
+        read -p "Control Plane Replicas (1, 3, or 5 - default: ${CP_REPLICAS_DEFAULT}): " CP_REPLICAS
+        CP_REPLICAS=${CP_REPLICAS:-$CP_REPLICAS_DEFAULT}
+    fi
     if [[ "$CP_REPLICAS" =~ ^[135]$ ]]; then
         break
     fi
@@ -452,8 +833,13 @@ done
 WORKER_REPLICAS_DEFAULT=$(get_default "worker_replicas")
 WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-$LICENSE_DEFAULT}
 while true; do
-    read -p "Worker Replicas (1-10, default: ${WORKER_REPLICAS_DEFAULT}): " WORKER_REPLICAS
-    WORKER_REPLICAS=${WORKER_REPLICAS:-$WORKER_REPLICAS_DEFAULT}
+    if [[ -n "$TUI_BIN" ]]; then
+        prompt_text "Worker Replicas (1-10)" "$WORKER_REPLICAS_DEFAULT" WORKER_REPLICAS
+        WORKER_REPLICAS="$REPLY"
+    else
+        read -p "Worker Replicas (1-10, default: ${WORKER_REPLICAS_DEFAULT}): " WORKER_REPLICAS
+        WORKER_REPLICAS=${WORKER_REPLICAS:-$WORKER_REPLICAS_DEFAULT}
+    fi
     if [[ "$WORKER_REPLICAS" =~ ^([1-9]|10)$ ]]; then
         break
     fi
@@ -461,15 +847,10 @@ while true; do
 done
 
 # ============================================================
-# SAVE DEFAULTS — written immediately after inputs, before any API calls
+# SAVE DEFAULTS — written immediately after inputs
 # ============================================================
 save_defaults
 echo -e "${GREEN}--> Inputs saved to ${DEFAULTS_FILE}${NC}"
-
-# Set v4 API credentials from collected inputs
-PCIPADDRESS="$PC_ENDPOINT"
-PCADMIN="$NUTANIX_USER"
-PCPASSWD="$NUTANIX_PASSWORD"
 
 # ============================================================
 # VERSION VALIDATION (v4 API)
@@ -547,6 +928,7 @@ while true; do
     printf "${CYAN}%-25s${NC} : %s\n" "VM Image Name"          "$VM_IMAGE"
     printf "${CYAN}%-25s${NC} : %s\n" "AHV Cluster Name"       "$AHV_CLUSTER"
     printf "${CYAN}%-25s${NC} : %s\n" "AHV Network Name"       "$NETWORK"
+    printf "${CYAN}%-25s${NC} : %s\n" "AHV Network CIDR"       "$SUBNET_CIDR"
     printf "${CYAN}%-25s${NC} : %s\n" "Storage Container"      "$STORAGE"
     printf "${CYAN}%-25s${NC} : %s\n" "Load Balancer Range"    "$LB_RANGE"
     printf "${CYAN}%-25s${NC} : %s\n" "Pod CIDR"               "100.64.0.0/14"
@@ -559,15 +941,28 @@ while true; do
     echo -ne "${CYAN}Validating VM image against Prism Central...${NC} "
     validate_vm_image "$VM_IMAGE"
 
-if [[ "$VM_IMAGE_VALID" == true ]]; then
+    if [[ "$VM_IMAGE_VALID" == true ]]; then
         echo -e "${GREEN}  ✔  Image '${VM_IMAGE}' found on Prism Central.${NC}"
         echo ""
-        read -p "Proceed with deployment? (Y/n) > " CONFIRM
-        [[ "$CONFIRM" =~ ^[Nn]$ ]] && exit 0
+        if [[ -n "$TUI_BIN" ]]; then
+            if [[ "$TUI_BIN" == "whiptail" ]]; then
+                whiptail --title "NKP Deployment" --yesno "Proceed with deployment using the values shown above?" 10 78 || exit 0
+            else
+                dialog --title "NKP Deployment" --yesno "Proceed with deployment using the values shown above?" 10 78 || exit 0
+            fi
+        else
+            read -p "Proceed with deployment? (Y/n) > " CONFIRM
+            [[ "$CONFIRM" =~ ^[Nn]$ ]] && exit 0
+        fi
         break
     else
         # validate_vm_image already printed the candidate list
-        read -p "Enter correct VM Image Name: " NEW_IMAGE
+        if [[ -n "$TUI_BIN" ]]; then
+            prompt_text "Enter the correct VM Image Name" "$VM_IMAGE" NEW_IMAGE
+            NEW_IMAGE="$REPLY"
+        else
+            read -p "Enter correct VM Image Name: " NEW_IMAGE
+        fi
         if [[ -n "$NEW_IMAGE" ]]; then
             VM_IMAGE="$NEW_IMAGE"
             save_defaults

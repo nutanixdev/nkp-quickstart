@@ -120,6 +120,8 @@ Choose one of the following installation methods based on your needs:
 
 This method guides you through the entire deployment process interactively with automatic validation and error checking. It's ideal for first-time users and provides:
 
+- ✅ **Terminal UI selections** - Selects the AHV cluster, network, storage container, and VM image directly from Prism Central
+- ✅ **CIDR-aware network prompts** - Prefills the selected network prefix and validates the control-plane VIP and load-balancer range against its actual mask
 - ✅ **Automated system prerequisite validation** - Checks and configures cgroup v2 delegation automatically
 - ✅ **Smart NKP Bundle management** - Auto-detects existing bundles, downloads if needed, extracts binaries
 - ✅ **Prism Central version compatibility checks** - Prevents incompatible deployments before they start
@@ -142,20 +144,20 @@ This method guides you through the entire deployment process interactively with 
     ./nkpDeploy.sh
     ```
 
-2. The script will verify prerequisites and then prompt for the following information:
+2. The script will verify prerequisites, collect the Prism Central IP/user/password, and then load selectable values from the Prism Central v4 APIs:
 
     | Parameter | Description | Example |
     | --------- | ----------- | ------- |
     | **Prism Central Endpoint** | IP address of Prism Central | `10.0.0.10` |
     | **Prism Username** | Your Prism Central username | `admin` |
     | **Prism Password** | Your Prism Central password | *(masked input)* |
+    | **AHV Cluster Name** | Select the target AHV cluster | `PHX-Cluster-1` |
+    | **Network Name** | Select the node network; its CIDR is shown | `Management [10.0.0.0/24]` |
+    | **Storage Container** | Select the storage container for persistent volumes | `SelfServiceContainer` |
+    | **VM Image Name** | Select the NKP Rocky image from Prism Central | `nkp-rocky-9.6-release-cis-1.34.1...qcow2` |
     | **Cluster Name** | Desired NKP cluster name (lowercase) | `prod-cluster` |
-    | **Control Plane VIP** | Static IP for control plane (outside IPAM) | `10.0.0.50` |
-    | **VM Image Name** | NKP Rocky image name in Prism Central | `nkp-rocky-9.6-release-cis-1.34.1...qcow2` |
-    | **AHV Cluster Name** | Name of the AHV cluster | `PHX-Cluster-1` |
-    | **Network Name** | Network for cluster nodes | `Management` |
-    | **Storage Container** | Storage container for persistent volumes | `SelfServiceContainer` |
-    | **LB IP Range** | Load balancer IP range | `10.0.0.100-10.0.0.110` |
+    | **Control Plane VIP** | Static IP for control plane (prefilled with network prefix) | `10.0.0.50` |
+    | **LB IP Range** | Load balancer range (prefilled with network prefix) | `10.0.0.100-10.0.0.110` |
     | **Control Plane Replicas** | Number of control plane nodes (1-5, default: 1) | `1` |
     | **Worker Replicas** | Number of worker nodes (1-10, default: 3) | `3` |
 
@@ -174,7 +176,8 @@ This method guides you through the entire deployment process interactively with 
 
 #### What the Script Does
 
-- **Dependency Check:** Verifies `curl`, `jq`, and `tar` are installed
+- **Dependency Check:** Verifies `curl`, `jq`, and `tar`; uses `whiptail` for the terminal UI when available (the supplied cloud-init installs it)
+- **Prism Central Discovery:** Uses the v4 cluster, networking/subnet, storage-container, and image APIs to populate the selectable values
 - **System Prerequisites:** Checks/configures cgroup v2 delegation (may require reboot)
 - **Connectivity Check:** Verifies outbound access to Nutanix portal
 - **Bundle Management:** Looks for existing bundle, prompts for download URL if needed, extracts binaries
