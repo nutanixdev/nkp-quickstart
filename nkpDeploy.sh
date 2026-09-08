@@ -1478,6 +1478,29 @@ fi
 export SSH_PUBLIC_KEY_FILE=~/.ssh/id_rsa.pub
 status_add "$GREEN" "SSH public key ready."
 
+# Prepare deployment environment before rendering the final review screen.
+export NUTANIX_USER
+export NUTANIX_PASSWORD
+export NUTANIX_ENDPOINT="https://${PC_ENDPOINT}:9440"
+export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}.conf"
+
+# ============================================================
+# FINAL SUMMARY — approval happens before image loading/deployment
+# ============================================================
+# The VM image was selected from the Prism Central image list above, so it is
+# already known to exist. Avoid a second filtered API request here; some PC
+# releases do not support that filter consistently.
+while true; do
+    render_final_summary
+    final_summary_confirmation
+    CONFIRM_RESULT=$?
+    if [[ $CONFIRM_RESULT -eq 0 ]]; then
+        break
+    elif [[ $CONFIRM_RESULT -eq 1 ]]; then
+        exit 0
+    fi
+done
+
 # ============================================================
 # PREFLIGHT 6: LOAD KONVOY BOOTSTRAP IMAGE
 # ============================================================
@@ -1529,31 +1552,6 @@ if [[ $LOAD_EXIT -ne 0 ]]; then
     exit 1
 fi
 status_add "$GREEN" "Konvoy bootstrap image loaded successfully."
-
-# Prepare the kubeconfig location before rendering the final screen so the
-# summary really is the last review surface before deployment.
-export NUTANIX_USER
-export NUTANIX_PASSWORD
-export NUTANIX_ENDPOINT="https://${PC_ENDPOINT}:9440"
-export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}.conf"
-
-# ============================================================
-# FINAL SUMMARY — the last screen before deployment
-# ============================================================
-# The VM image was selected from the Prism Central image list above, so it is
-# already known to exist. Avoid a second filtered API request here; some PC
-# releases do not support that filter consistently and could skip the review
-# screen even though the selected image is valid.
-while true; do
-    render_final_summary
-    final_summary_confirmation
-    CONFIRM_RESULT=$?
-    if [[ $CONFIRM_RESULT -eq 0 ]]; then
-        break
-    elif [[ $CONFIRM_RESULT -eq 1 ]]; then
-        exit 0
-    fi
-done
 
 # ============================================================
 # DEPLOYMENT
