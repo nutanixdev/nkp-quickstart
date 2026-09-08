@@ -94,6 +94,21 @@ get_default() {
     fi
 }
 
+# Persist the connection fields as soon as they have been validated so a
+# later failure does not require re-entering them. Passwords are never saved.
+save_connection_defaults() {
+    local EXISTING='{}'
+    if [[ -f "$DEFAULTS_FILE" ]]; then
+        EXISTING=$(jq -c . "$DEFAULTS_FILE" 2>/dev/null || printf '{}')
+    fi
+    jq --arg pc_endpoint "$PC_ENDPOINT" \
+        --arg nutanix_user "$NUTANIX_USER" \
+        '.
+         + (if $pc_endpoint != "" then {pc_endpoint: $pc_endpoint} else {} end)
+         + (if $nutanix_user != "" then {nutanix_user: $nutanix_user} else {} end)' \
+        <<< "$EXISTING" > "$DEFAULTS_FILE"
+}
+
 # ============================================================
 # HELPER: Save all current inputs to defaults JSON (no password)
 # ============================================================
@@ -650,11 +665,6 @@ validate_ipv4() {
     (( COUNT == 4 ))
 }
 
-# ============================================================
-# HELPER: version comparison
-# ============================================================
-version_gt() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
-
 version_at_least() {
     local ACTUAL REQUIRED LOWEST
     ACTUAL=$(printf '%s' "$1" | sed -E 's/^[^0-9]*//')
@@ -677,7 +687,6 @@ validate_compatibility() {
     local ENTRY="$1"
     local SUPPORTED_K8S
     SUPPORTED_K8S=$(echo "$ENTRY" | jq -r '.nkp_supported_version[]? // empty' 2>/dev/null | paste -sd ', ' -)
-    COMPATIBILITY_K8S_SUPPORTED="$SUPPORTED_K8S"
 
     if [[ -z "${VM_IMAGE_K8S_VERSION:-}" ]]; then
         show_message "Unable to determine the Kubernetes version from the selected VM image.\n\nKeep the original NKP Rocky image name; it must contain a version such as 1.34.3."
@@ -715,7 +724,7 @@ validate_compatibility() {
 }
 
 # ============================================================
-# HELPER: ip2int (kept for potential future use)
+# HELPER: IPv4 address conversion
 # ============================================================
 ip2int() {
     local a b c d
@@ -817,51 +826,6 @@ api_error_message() {
     ' 2>/dev/null | tr '\n' ' ' | cut -c1-360)
     [[ -z "$DETAIL" ]] && DETAIL="No response body was returned."
     printf 'Prism Central API request failed (HTTP %s).\n\nEndpoint: %s\n\n%s' "$STATUS" "${API_PATH:-unknown}" "$DETAIL"
-}
-
-# ============================================================
-# HELPER: Validate VM image against PC — called from summary loop
-# Sets VM_IMAGE_VALID=true/false
-# ============================================================
-validate_vm_image() {
-    local IMAGE_NAME="$1"
-    local RESULTS
-    RESULTS=$(call_curl_v4 "GET" "/vmm/v4.0/content/images?\$filter=contains(name,'${IMAGE_NAME}')")
-    local EXACT_MATCH
-    EXACT_MATCH=$(echo "$RESULTS" | jq -r --arg NAME "$IMAGE_NAME" '.data[]? | select(.name == $NAME) | .name' 2>/dev/null)
-
-    if [[ -n "$EXACT_MATCH" ]]; then
-        VM_IMAGE_VALID=true
-        return
-    fi
-
-    VM_IMAGE_VALID=false
-    local FUZZY_LIST
-    FUZZY_LIST=$(echo "$RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
-    local IMAGE_MESSAGE="Image '${IMAGE_NAME}' was not found on Prism Central."
-    if [[ -n "$FUZZY_LIST" ]]; then
-        IMAGE_MESSAGE+=$'\n\nSimilar images found:'
-        while IFS= read -r IMG; do
-            IMAGE_MESSAGE+=$'\n  '
-            IMAGE_MESSAGE+="$IMG"
-        done <<< "$FUZZY_LIST"
-    else
-        IMAGE_MESSAGE+=$'\n\nNo similar images found. Fetching the full image list...'
-        local ALL_RESULTS
-        ALL_RESULTS=$(call_curl_v4 "GET" "/vmm/v4.0/content/images")
-        local ALL_IMAGES
-        ALL_IMAGES=$(echo "$ALL_RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
-        if [[ -n "$ALL_IMAGES" ]]; then
-            IMAGE_MESSAGE+=$'\n\nAvailable images:'
-            while IFS= read -r IMG; do
-                IMAGE_MESSAGE+=$'\n  '
-                IMAGE_MESSAGE+="$IMG"
-            done <<< "$ALL_IMAGES"
-        else
-            IMAGE_MESSAGE+=$'\n\nCould not retrieve the image list from Prism Central.'
-        fi
-    fi
-    show_message "$IMAGE_MESSAGE"
 }
 
 summary_row() {
@@ -1013,7 +977,9 @@ fi
 
 if [[ -z "$BUNDLE_FILE" ]]; then
     status_add "$YELLOW" "NKP Bundle not found locally."
-    status_add "$CYAN" "Download the standard bundle from the Nutanix portal."
+    status_add "$CYAN" "In the Nutanix Support Portal, open Downloads > NKP."
+    status_add "$CYAN" "Copy the standard NKP Bundle download link itself."
+    status_add "$YELLOW" "Paste the complete link below; do not use the portal page, CLI, or air-gapped link."
     while true; do
         prompt_text "Paste the full Nutanix Bundle download URL" "" RAW_URL
         RAW_URL="$REPLY"
@@ -1107,6 +1073,7 @@ while true; do
     prompt_text "Prism Central Endpoint (IPv4 address)" "$PC_ENDPOINT_DEFAULT" PC_ENDPOINT ip
     PC_ENDPOINT="$REPLY"
     if validate_ipv4 "$PC_ENDPOINT"; then
+        save_connection_defaults
         break
     fi
     show_message "Enter a valid Prism Central IPv4 address."
@@ -1118,6 +1085,7 @@ while true; do
     prompt_text "Prism Username" "$NUTANIX_USER_DEFAULT" NUTANIX_USER
     NUTANIX_USER="$REPLY"
     if [[ -n "$NUTANIX_USER" ]]; then
+        save_connection_defaults
         break
     fi
     show_message "Prism username cannot be empty."
@@ -1179,7 +1147,7 @@ NETWORK_NAMES_ALL=()
 NETWORK_CIDRS_ALL=()
 NETWORK_NAMES_MATCHED=()
 NETWORK_CIDRS_MATCHED=()
-while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_CLUSTER_ID_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM NETWORK_TYPE_ITEM; do
+while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_CLUSTER_ID_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM; do
     [[ -z "$NETWORK_NAME_ITEM" || -z "$NETWORK_IP_ITEM" || -z "$NETWORK_PREFIX_ITEM" ]] && continue
     [[ ! "$NETWORK_PREFIX_ITEM" =~ ^[0-9]+$ || "$NETWORK_PREFIX_ITEM" -gt 32 ]] && continue
     NETWORK_NAMES_ALL+=("$NETWORK_NAME_ITEM")
@@ -1194,8 +1162,7 @@ done < <(echo "$NETWORK_RESPONSE" | jq -r '
         (.name // ""),
         (if (.clusterReference | type) == "object" then (.clusterReference.extId // "") else (.clusterReference // "") end),
         (.ipConfig[0].ipv4.ipSubnet.ip.value // ""),
-        (.ipConfig[0].ipv4.ipSubnet.prefixLength // ""),
-        (.subnetType // "")
+        (.ipConfig[0].ipv4.ipSubnet.prefixLength // "")
       ]
     | @tsv' 2>/dev/null)
 

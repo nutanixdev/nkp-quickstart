@@ -116,76 +116,53 @@ Choose one of the following installation methods based on your needs:
 
 ### Scripted Automated Deployment (Recommended)
 
-#### NEW: See how it works! - https://nutanix.storylane.io/share/nkp-quickstart
+This is the guided deployment path for the jump host created from the repository's [cloud-init](./cloud-init) configuration. Run it from the cloned repository:
 
-This method guides you through the entire deployment process interactively with automatic validation and error checking. It's ideal for first-time users and provides:
+```shell
+./nkpDeploy.sh
+```
 
-- ✅ **Modern terminal selections** - Uses color keyboard-driven pickers with bordered panels, controls, and counters
-- ✅ **CIDR-aware network prompts** - Prefills the selected network prefix and validates the control-plane VIP and load-balancer range against its actual mask
-- ✅ **Automated system prerequisite validation** - Checks and configures cgroup v2 delegation automatically
-- ✅ **Smart NKP Bundle management** - Auto-detects existing bundles, downloads if needed, extracts binaries
-- ✅ **Prism Central version compatibility checks** - Prevents incompatible deployments before they start
-- ✅ **Comprehensive input validation** - Validates IP ranges, cluster names, and subnet alignment
-- ✅ **Network connectivity verification** - Ensures outbound access to Nutanix portal
-- ✅ **Pre-flight summary review** - Shows all parameters and requires explicit confirmation
+The application runs directly in the terminal with a full-screen, purple-themed interface. It does not require a separate TUI framework. Arrow keys and Enter are used for selections; text fields, masked password input, and the final Y/N confirmation are handled inside the same bordered interface. Use `Ctrl-C` to exit.
 
-**Use this method if:**
+#### What happens during a run
 
-- You want a guided, hands-off deployment experience
-- This is your first NKP deployment
-- You want automatic compatibility validation to prevent mid-deployment failures
-- You prefer interactive prompts over manual configuration files
+1. **Local preflight:** Verifies the required command-line tools, checks Docker/Podman and cgroup configuration, tests outbound access to the Nutanix portal, discovers or downloads the NKP bundle, extracts it, and installs the bundled `nkp` and `kubectl` binaries.
 
-**Steps:**
+2. **Prism Central login:** Collects the Prism Central IPv4 endpoint, username, and masked password. The endpoint and username are saved immediately to `nkpDeploy_defaults.json` so they remain available after a later failed attempt. The password is never written to disk.
 
-1. From your cloned repository run the script to begin:
+3. **API-backed selections:** Uses Prism Central v4 APIs to populate selectors for the AHV cluster, network, storage container, and Rocky VM image. The selected network's CIDR is used to validate the remaining network inputs.
 
-    ```shell
-    ./nkpDeploy.sh
-    ```
+4. **Network and sizing inputs:** Requests the cluster name, control-plane VIP, and load-balancer start address using only the editable host portion of the selected network. You then select the number of load-balancer IPs; the end address is calculated automatically. Control-plane replicas are limited to `1`, `3`, or `5`, and worker replicas to `1` through `10`.
 
-2. The script will verify prerequisites, collect the Prism Central IP/user/password, and then load selectable values from the Prism Central v4 APIs:
+5. **Compatibility checks:** Compares the NKP bundle version, detected Prism Central and AOS versions, and Kubernetes version embedded in the selected Rocky image with the rules in [`nkp_compatibility.json`](./nkp_compatibility.json). A release can list more than one compatible PC/AOS row and supports the current Kubernetes minor version plus one version back where applicable.
 
-    | Parameter | Description | Example |
-    | --------- | ----------- | ------- |
-    | **Prism Central Endpoint** | IP address of Prism Central | `10.0.0.10` |
-    | **Prism Username** | Your Prism Central username | `admin` |
-    | **Prism Password** | Your Prism Central password | *(masked input)* |
-    | **AHV Cluster Name** | Select the target AHV cluster | `PHX-Cluster-1` |
-    | **Network Name** | Select the node network; its CIDR is shown | `Management [10.0.0.0/24]` |
-    | **Storage Container** | Select the storage container for persistent volumes | `SelfServiceContainer` |
-    | **VM Image Name** | Select the NKP Rocky image from Prism Central | `nkp-rocky-9.6-release-cis-1.34.1...qcow2` |
-    | **Cluster Name** | Desired NKP cluster name (lowercase) | `prod-cluster` |
-    | **Control Plane VIP** | Network prefix is fixed; enter only the host octet(s) | `50` → `10.0.0.50` |
-    | **LB IP Range** | Enter the starting host octet(s), then select the number of IPs | `100`, `10 IPs` → `10.0.0.100-10.0.0.109` |
-    | **Control Plane Replicas** | Select the number of control plane nodes | `1`, `3`, or `5` |
-    | **Worker Replicas** | Select the number of worker nodes | `1`-`10` |
+6. **Final review and deployment:** Displays a terminal-sized deployment summary and waits for an explicit `Y` or `N` before loading bootstrap images and running `nkp create cluster`.
 
-3. Review the final deployment summary and confirm to proceed.
+#### NKP bundle download
 
-    ![Final Deployment Summary](./images/finaldeploymentsummary.png)
+The script first looks for a standard NKP bundle that is already present or extracted in the current directory. If it cannot find one, it asks for the **full download URL** from the Nutanix Support Portal.
 
-4. The deployment typically takes 45-60 minutes. Once complete, configure your kubeconfig:
+In the portal, open the download page for the NKP release you want, locate the **standard NKP Bundle**, and copy the download link itself. Paste that complete URL into the prompt exactly as provided, including any query string or temporary access parameters. Do not paste the portal page URL, the NKP CLI link, or the Air-Gapped Bundle link. The filename must resolve to the normal `nkp-bundle_v*.tar.gz` format; the script rejects air-gapped bundles.
 
-    ```shell
-    export KUBECONFIG=$(pwd)/<cluster_name>.conf
-    nkp get dashboard
-    ```
+#### Inputs loaded from Prism Central
 
-    This will display the Kommander dashboard URL and login credentials.
+| Input | How it is supplied |
+| ----- | ------------------ |
+| Prism Central endpoint and username | Entered once and retained in `nkpDeploy_defaults.json` |
+| Prism Central password | Entered for each run; never saved |
+| AHV cluster | Selected from the Prism Central v4 cluster API |
+| Network | Selected from the v4 subnet API; CIDR is used for validation and host-prefix prompts |
+| Storage container | Selected from the v4 storage-container API |
+| VM image | Selected from Rocky images returned by Prism Central; the Kubernetes version is extracted from its name |
+| Control-plane VIP and load-balancer range | Host portion entered against the selected network; load-balancer end address is calculated |
+| Control-plane and worker replicas | Selected from bounded options |
 
-#### What the Script Does
+The deployment typically takes 45–60 minutes. Once it completes, configure the generated kubeconfig and view the dashboard details:
 
-- **Dependency Check:** Verifies `curl`, `jq`, and `tar`; the modern keyboard picker and prompts use ANSI terminal controls without an additional UI dependency
-- **Prism Central Discovery:** Uses the v4 cluster, networking/subnet, storage-container, and image APIs to populate the selectable values
-- **System Prerequisites:** Checks/configures cgroup v2 delegation (may require reboot)
-- **Connectivity Check:** Verifies outbound access to Nutanix portal
-- **Bundle Management:** Looks for existing bundle, prompts for download URL if needed, extracts binaries
-- **Binary Installation:** Installs `nkp` and `kubectl` to `/usr/local/bin`
-- **Configurable Sizing:** Allows custom control plane and worker replica counts (optional, has defaults)
-- **Version Validation:** Matches the detected PC, AOS, NKP bundle, and Rocky-image Kubernetes versions against the release compatibility data
-- **Input Validation:** Ensures all parameters are correctly formatted and compatible
-- **Deployment:** Executes the `nkp create cluster` command with validated parameters and custom sizing
+```shell
+export KUBECONFIG=$(pwd)/<cluster_name>.conf
+nkp get dashboard
+```
 
 #### Compatibility data
 
