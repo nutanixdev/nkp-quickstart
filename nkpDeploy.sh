@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # --- ANSI Color Codes ---
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
 PURPLE='\033[38;5;141m'
-YELLOW='\033[1;33m'
 RED='\033[0;31m'
+# Normal status variants intentionally resolve to the Nutanix purple theme.
+GREEN="$PURPLE"
+CYAN="$PURPLE"
+YELLOW="$PURPLE"
 NC='\033[0m'
 TUI_ALT_SCREEN_ACTIVE=0
 
@@ -28,7 +29,17 @@ tui_restore_terminal() {
     fi
 }
 
-trap tui_restore_terminal EXIT
+tui_cleanup() {
+    if [[ -n "${NKP_PID:-}" ]] && kill -0 "$NKP_PID" 2>/dev/null; then
+        kill "$NKP_PID" 2>/dev/null || true
+    fi
+    if [[ -n "${DEPLOY_LOG:-}" ]]; then
+        rm -f "$DEPLOY_LOG"
+    fi
+    tui_restore_terminal
+}
+
+trap tui_cleanup EXIT
 
 # --- Defaults file sits next to the script ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -606,6 +617,37 @@ status_pause() {
     IFS= read -r _ < /dev/tty
 }
 
+render_deployment_output() {
+    local TITLE="$1"
+    local LOG_FILE="$2"
+    local FOOTER="$3"
+    local CONTENT_ROWS
+    local LINE COLOR
+    local -a LOG_LINES=()
+
+    frame_setup
+    frame_header "$TITLE"
+    CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    while IFS= read -r LINE; do
+        [[ -n "$LINE" ]] && LOG_LINES+=("$LINE")
+    done < <(tail -n "$CONTENT_ROWS" "$LOG_FILE" | sed -E 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g; s/\r//g')
+
+    for LINE in "${LOG_LINES[@]}"; do
+        case "${LINE,,}" in
+            *error*|*failed*|*fatal*) COLOR="$RED" ;;
+            *warn*) COLOR="$YELLOW" ;;
+            *complete*|*success*) COLOR="$GREEN" ;;
+            *) COLOR="$CYAN" ;;
+        esac
+        frame_row_color "$COLOR" "  $LINE"
+    done
+    local INDEX
+    for ((INDEX=${#LOG_LINES[@]}; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "$FOOTER"
+}
+
 # ============================================================
 # DEPENDENCY CHECK
 # ============================================================
@@ -1053,7 +1095,6 @@ fi
 # Define Bundle Paths
 KOMMANDER_BUNDLE="./$TARGET_DIR/container-images/kommander-image-bundle-${VERSION_WITH_V}.tar"
 KONVOY_BUNDLE="./$TARGET_DIR/container-images/konvoy-image-bundle-${VERSION_WITH_V}.tar"
-BUNDLE_FLAGS="--bundle ${KOMMANDER_BUNDLE},${KONVOY_BUNDLE}"
 
 # Resolve bootstrap image path using the same VERSION_WITH_V regex-derived value
 BOOTSTRAP_IMAGE="./$TARGET_DIR/konvoy-bootstrap-image-${VERSION_WITH_V}.tar"
@@ -1521,39 +1562,47 @@ status_add "$GREEN" "Konvoy bootstrap image loaded successfully."
 # ============================================================
 # DEPLOYMENT
 # ============================================================
-echo -e "${GREEN}Starting Deployment...${NC}"
-nkp create cluster nutanix \
-  $BUNDLE_FLAGS \
-  --cluster-name                              "${CLUSTER_NAME}" \
-  --endpoint                                  "${NUTANIX_ENDPOINT}" \
-  --insecure \
-  --control-plane-prism-element-cluster       "${AHV_CLUSTER}" \
-  --worker-prism-element-cluster              "${AHV_CLUSTER}" \
-  --control-plane-subnets                     "${NETWORK}" \
-  --worker-subnets                            "${NETWORK}" \
-  --vm-image                                  "${VM_IMAGE}" \
-  --control-plane-endpoint-ip                 "${VIP}" \
-  --csi-storage-container                     "${STORAGE}" \
-  --kubernetes-service-load-balancer-ip-range "${LB_RANGE}" \
-  --kubernetes-pod-network-cidr               "100.64.0.0/14" \
-  --kubernetes-service-cidr                   "100.68.0.0/16" \
-  --control-plane-replicas                    "$CP_REPLICAS" \
-  --worker-replicas                           "$WORKER_REPLICAS" \
-  --ssh-username                              "nutanix" \
-  --ssh-public-key-file                       "${SSH_PUBLIC_KEY_FILE}" \
-  --timeout                                          "60m0s" \
-  --self-managed
+DEPLOY_LOG=$(mktemp)
+DEPLOY_COMMAND=(
+    nkp create cluster nutanix
+    --bundle "${KOMMANDER_BUNDLE},${KONVOY_BUNDLE}"
+    --cluster-name "${CLUSTER_NAME}"
+    --endpoint "${NUTANIX_ENDPOINT}"
+    --insecure
+    --control-plane-prism-element-cluster "${AHV_CLUSTER}"
+    --worker-prism-element-cluster "${AHV_CLUSTER}"
+    --control-plane-subnets "${NETWORK}"
+    --worker-subnets "${NETWORK}"
+    --vm-image "${VM_IMAGE}"
+    --control-plane-endpoint-ip "${VIP}"
+    --csi-storage-container "${STORAGE}"
+    --kubernetes-service-load-balancer-ip-range "${LB_RANGE}"
+    --kubernetes-pod-network-cidr "100.64.0.0/14"
+    --kubernetes-service-cidr "100.68.0.0/16"
+    --control-plane-replicas "$CP_REPLICAS"
+    --worker-replicas "$WORKER_REPLICAS"
+    --ssh-username "nutanix"
+    --ssh-public-key-file "${SSH_PUBLIC_KEY_FILE}"
+    --timeout "60m0s"
+    --self-managed
+)
+
+"${DEPLOY_COMMAND[@]}" >"$DEPLOY_LOG" 2>&1 &
+NKP_PID=$!
+while kill -0 "$NKP_PID" 2>/dev/null; do
+    render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "Deployment running   Ctrl-C exit"
+    sleep 1
+done
+wait "$NKP_PID"
 NKP_EXIT=$?
+NKP_PID=""
+render_deployment_output "Deployment result" "$DEPLOY_LOG" "Enter continue   Ctrl-C exit"
 
 if [[ $NKP_EXIT -eq 0 ]]; then
-    echo -e "${GREEN}Deployment finished successfully.${NC}"
-    echo -e "${CYAN}Access your cluster with:${NC}"
-    echo -e "  export KUBECONFIG=${KUBECONFIG}"
+    rm -f "$DEPLOY_LOG"
+    show_message "Deployment finished successfully.\n\nKubeconfig:\n${KUBECONFIG}\n\nRun:\nexport KUBECONFIG=${KUBECONFIG}\nnkp get dashboard"
 else
-    echo -e "${RED}=======================================================${NC}"
-    echo -e "${RED}ERROR: Deployment failed (exit code ${NKP_EXIT}).${NC}"
-    echo -e "${YELLOW}Your inputs have been saved to: ${DEFAULTS_FILE}${NC}"
-    echo -e "${YELLOW}Re-run nkpDeploy.sh to retry with the same defaults.${NC}"
-    echo -e "${RED}=======================================================${NC}"
+    rm -f "$DEPLOY_LOG"
+    show_message "Deployment failed (exit code ${NKP_EXIT}).\n\nYour inputs were saved to:\n${DEFAULTS_FILE}\n\nRe-run nkpDeploy.sh to retry with the same defaults."
     exit 1
 fi
