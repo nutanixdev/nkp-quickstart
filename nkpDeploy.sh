@@ -977,11 +977,9 @@ fi
 
 if [[ -z "$BUNDLE_FILE" ]]; then
     status_add "$YELLOW" "NKP Bundle not found locally."
-    status_add "$CYAN" "In the Nutanix Support Portal, open Downloads > NKP."
-    status_add "$CYAN" "Copy the standard NKP Bundle download link itself."
-    status_add "$YELLOW" "Paste the complete link below; do not use the portal page, CLI, or air-gapped link."
+    show_message "NKP Bundle download required.\n\nOpen the Nutanix Support Portal and select Downloads > NKP.\nChoose the standard NKP Bundle for the release you want, then copy the download link itself.\n\nPaste that complete link on the next screen, including any query string or temporary access parameters.\nDo not use the portal page URL, NKP CLI link, or Air-Gapped Bundle link."
     while true; do
-        prompt_text "Paste the full Nutanix Bundle download URL" "" RAW_URL
+        prompt_text "Paste the full standard NKP Bundle download URL" "" RAW_URL
         RAW_URL="$REPLY"
         [[ -z "$RAW_URL" ]] && exit 1
         BUNDLE_FILE=$(basename "${RAW_URL%%\?*}")
