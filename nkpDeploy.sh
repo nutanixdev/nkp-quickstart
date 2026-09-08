@@ -33,6 +33,7 @@ trap tui_restore_terminal EXIT
 # --- Defaults file sits next to the script ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULTS_FILE="${SCRIPT_DIR}/nkpDeploy_defaults.json"
+COMPATIBILITY_FILE="${SCRIPT_DIR}/nkp_compatibility.json"
 
 # ============================================================
 # HELPER: Inline v4 API call
@@ -654,6 +655,65 @@ validate_ipv4() {
 # ============================================================
 version_gt() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
 
+version_at_least() {
+    local ACTUAL REQUIRED LOWEST
+    ACTUAL=$(printf '%s' "$1" | sed -E 's/^[^0-9]*//')
+    REQUIRED=$(printf '%s' "$2" | sed -E 's/^[^0-9]*//')
+    [[ -n "$ACTUAL" && -n "$REQUIRED" ]] || return 1
+    LOWEST=$(printf '%s\n%s\n' "$ACTUAL" "$REQUIRED" | sort -V | head -n1)
+    [[ "$LOWEST" == "$REQUIRED" ]]
+}
+
+extract_kubernetes_version() {
+    local IMAGE_NAME="$1"
+    if [[ "$IMAGE_NAME" =~ (^|[-_.])v?1\.([0-9]+)\.[0-9]+([-_.]|$) ]]; then
+        printf '1.%s.x' "${BASH_REMATCH[2]}"
+        return 0
+    fi
+    return 1
+}
+
+validate_compatibility() {
+    local ENTRY="$1"
+    local SUPPORTED_K8S
+    SUPPORTED_K8S=$(echo "$ENTRY" | jq -r '.nkp_supported_version[]? // empty' 2>/dev/null | paste -sd ', ' -)
+    COMPATIBILITY_K8S_SUPPORTED="$SUPPORTED_K8S"
+
+    if [[ -z "${VM_IMAGE_K8S_VERSION:-}" ]]; then
+        show_message "Unable to determine the Kubernetes version from the selected VM image.\n\nKeep the original NKP Rocky image name; it must contain a version such as 1.34.3."
+        return 1
+    fi
+
+    if ! echo "$ENTRY" | jq -e --arg VERSION "$VM_IMAGE_K8S_VERSION" \
+        '.nkp_supported_version | index($VERSION) != null' >/dev/null 2>&1; then
+        show_message "The selected VM image is not compatible with NKP ${NKP_VERSION_KEY}.\n\nImage Kubernetes version: ${VM_IMAGE_K8S_VERSION}\nSupported versions: ${SUPPORTED_K8S:-none listed}\n\nSelect the Rocky image supplied for this NKP release."
+        return 1
+    fi
+
+    local AOS_COUNT PC_COUNT INDEX MIN_AOS MIN_PC COMPATIBLE=false COMPATIBILITY_ROWS=""
+    AOS_COUNT=$(echo "$ENTRY" | jq -r '.aos_min_version | length' 2>/dev/null)
+    PC_COUNT=$(echo "$ENTRY" | jq -r '.prism_central_min_version | length' 2>/dev/null)
+    if [[ ! "$AOS_COUNT" =~ ^[0-9]+$ || "$AOS_COUNT" -eq 0 || "$AOS_COUNT" -ne "$PC_COUNT" ]]; then
+        show_message "The compatibility entry for NKP ${NKP_VERSION_KEY} is invalid.\n\nAOS and Prism Central minimum-version lists must contain matching rows."
+        return 1
+    fi
+
+    for ((INDEX=0; INDEX<AOS_COUNT; INDEX++)); do
+        MIN_AOS=$(echo "$ENTRY" | jq -r --argjson INDEX "$INDEX" '.aos_min_version[$INDEX]')
+        MIN_PC=$(echo "$ENTRY" | jq -r --argjson INDEX "$INDEX" '.prism_central_min_version[$INDEX]')
+        COMPATIBILITY_ROWS+="\n  Prism Central >= ${MIN_PC} and AOS >= ${MIN_AOS}"
+        if version_at_least "$AOS_VERSION" "$MIN_AOS" && version_at_least "$PC_RAW" "$MIN_PC"; then
+            COMPATIBLE=true
+        fi
+    done
+
+    if [[ "$COMPATIBLE" != true ]]; then
+        show_message "The selected environment is not compatible with NKP ${NKP_VERSION_KEY}.\n\nDetected Prism Central: ${PC_RAW}\nDetected AOS: ${AOS_VERSION}\nSelected Kubernetes image: ${VM_IMAGE_K8S_VERSION}\n\nAccepted platform combinations:${COMPATIBILITY_ROWS}"
+        return 1
+    fi
+    return 0
+}
+
 # ============================================================
 # HELPER: ip2int (kept for potential future use)
 # ============================================================
@@ -834,11 +894,13 @@ render_final_summary() {
     summary_row "Control Plane VIP" "$VIP"
     summary_row "Load Balancer Range" "$LB_RANGE"
     summary_row "VM Image" "$VM_IMAGE"
+    summary_row "Kubernetes Image Version" "$VM_IMAGE_K8S_VERSION"
     summary_row "Storage Container" "$STORAGE"
     summary_row "Control Plane Nodes" "$CP_REPLICAS"
     summary_row "Worker Nodes" "$WORKER_REPLICAS"
     summary_row "Kubeconfig" "$KUBECONFIG"
-    local SUMMARY_ROWS=15
+    summary_row "Deployment approval" "Press Y to deploy or N to exit"
+    local SUMMARY_ROWS=17
     local CONTENT_ROWS=$((SCREEN_ROWS - 7))
     local INDEX
     for ((INDEX=SUMMARY_ROWS; INDEX<CONTENT_ROWS; INDEX++)); do
@@ -849,11 +911,14 @@ render_final_summary() {
 
 final_summary_confirmation() {
     local CONFIRM=""
-    IFS= read -r -s -n 1 CONFIRM < /dev/tty
-    [[ -z "$CONFIRM" ]] && CONFIRM="Y"
-    [[ "$CONFIRM" =~ ^[Nn]$ ]] && return 1
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || return 2
-    return 0
+    while true; do
+        IFS= read -r -s -n 1 CONFIRM < /dev/tty
+        # Ignore an Enter/newline left behind by the preceding selector. The
+        # deployment review must require an explicit Y or N.
+        [[ -z "$CONFIRM" || "$CONFIRM" == $'\n' || "$CONFIRM" == $'\r' ]] && continue
+        [[ "$CONFIRM" =~ ^[Nn]$ ]] && return 1
+        [[ "$CONFIRM" =~ ^[Yy]$ ]] && return 0
+    done
 }
 
 # ============================================================
@@ -1184,16 +1249,23 @@ if api_failed "$IMAGE_RESPONSE"; then
 fi
 
 IMAGE_NAMES=()
+IMAGE_K8S_VERSIONS=()
+IMAGE_LABELS=()
 while IFS= read -r IMAGE_NAME_ITEM; do
     [[ -z "$IMAGE_NAME_ITEM" ]] && continue
+    IMAGE_K8S_VERSION_ITEM=$(extract_kubernetes_version "$IMAGE_NAME_ITEM" 2>/dev/null || true)
+    [[ "${IMAGE_NAME_ITEM,,}" == *rocky* && -n "$IMAGE_K8S_VERSION_ITEM" ]] || continue
     IMAGE_NAMES+=("$IMAGE_NAME_ITEM")
+    IMAGE_K8S_VERSIONS+=("$IMAGE_K8S_VERSION_ITEM")
+    IMAGE_LABELS+=("${IMAGE_NAME_ITEM} [Kubernetes ${IMAGE_K8S_VERSION_ITEM:-unknown}]")
 done < <(echo "$IMAGE_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sort -fu)
 if [[ ${#IMAGE_NAMES[@]} -eq 0 ]]; then
-    show_message "No VM images were returned by Prism Central.\n\nUpload the NKP node image to Prism Central before starting the deployment."
+    show_message "No versioned NKP Rocky VM images were returned by Prism Central.\n\nUpload the original NKP Rocky image; its name must contain a Kubernetes version such as 1.34.3."
     exit 1
 fi
-SELECTED_INDEX=$(select_option "Select the VM image for NKP nodes" "${IMAGE_NAMES[@]}") || exit 1
+SELECTED_INDEX=$(select_option "Select the VM image for NKP nodes" "${IMAGE_LABELS[@]}") || exit 1
 VM_IMAGE="${IMAGE_NAMES[$((SELECTED_INDEX - 1))]}"
+VM_IMAGE_K8S_VERSION="${IMAGE_K8S_VERSIONS[$((SELECTED_INDEX - 1))]}"
 
 CLUSTER_NAME_DEFAULT=$(get_default "cluster_name")
 while true; do
@@ -1367,15 +1439,23 @@ if [[ -z "$AOS_VERSION" ]]; then
     exit 1
 fi
 
-if ! version_gt "$PC_VERSION" "7.3" || ! version_gt "$AOS_VERSION" "7.3"; then
-    status_add "$RED" "Error: installation halted; incompatible versions detected."
-    status_add "$YELLOW" "Required: Prism Central > 7.3 and AOS > 7.3"
-    status_add "$CYAN" "Detected: PC ${PC_RAW}; AOS ${AOS_VERSION}"
-    status_pause
+NKP_VERSION_KEY=$(echo "$VERSION_WITH_V" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
+if [[ ! -f "$COMPATIBILITY_FILE" ]]; then
+    show_message "Compatibility data file not found:\n\n${COMPATIBILITY_FILE}"
     exit 1
 fi
 
-status_add "$GREEN" "Version validation passed."
+COMPATIBILITY_ENTRY=$(jq -c --arg VERSION "$NKP_VERSION_KEY" '.[$VERSION] // empty' "$COMPATIBILITY_FILE" 2>/dev/null)
+if [[ -z "$COMPATIBILITY_ENTRY" ]]; then
+    show_message "No compatibility data is defined for NKP ${NKP_VERSION_KEY}.\n\nAdd this NKP release to ${COMPATIBILITY_FILE} before deploying."
+    exit 1
+fi
+
+if ! validate_compatibility "$COMPATIBILITY_ENTRY"; then
+    exit 1
+fi
+
+status_add "$GREEN" "NKP, platform, and Kubernetes image compatibility passed."
 
 # ============================================================
 # SSH KEY SETUP

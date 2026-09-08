@@ -183,9 +183,20 @@ This method guides you through the entire deployment process interactively with 
 - **Bundle Management:** Looks for existing bundle, prompts for download URL if needed, extracts binaries
 - **Binary Installation:** Installs `nkp` and `kubectl` to `/usr/local/bin`
 - **Configurable Sizing:** Allows custom control plane and worker replica counts (optional, has defaults)
-- **Version Validation:** Queries Prism Central API to confirm PC and AOS versions > 7.3
+- **Version Validation:** Matches the detected PC, AOS, NKP bundle, and Rocky-image Kubernetes versions against the release compatibility data
 - **Input Validation:** Ensures all parameters are correctly formatted and compatible
 - **Deployment:** Executes the `nkp create cluster` command with validated parameters and custom sizing
+
+#### Compatibility data
+
+The deployment workflow reads release compatibility rules from [`nkp_compatibility.json`](./nkp_compatibility.json). Each release entry has exactly four fields:
+
+- `nkp_version` — matched to the `vX.Y.Z` version in the NKP bundle filename
+- `aos_min_version` — minimum AOS versions returned by Prism Central
+- `prism_central_min_version` — matching Prism Central minimum versions returned by Prism Central
+- `nkp_supported_version` — Kubernetes minor versions supported by the selected NKP Rocky image
+
+For releases with multiple PC/AOS compatibility rows, the AOS and Prism Central arrays are positionally aligned. Update this file as new NKP releases are added or compatibility requirements change.
 
 ---
 
