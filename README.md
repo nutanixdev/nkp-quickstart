@@ -120,7 +120,7 @@ Choose one of the following installation methods based on your needs:
 
 This method guides you through the entire deployment process interactively with automatic validation and error checking. It's ideal for first-time users and provides:
 
-- ✅ **Modern terminal selections** - Uses a color keyboard-driven picker to select the AHV cluster, network, storage container, and VM image directly from Prism Central
+- ✅ **Modern terminal selections** - Uses color keyboard-driven pickers with bordered panels, controls, and counters
 - ✅ **CIDR-aware network prompts** - Prefills the selected network prefix and validates the control-plane VIP and load-balancer range against its actual mask
 - ✅ **Automated system prerequisite validation** - Checks and configures cgroup v2 delegation automatically
 - ✅ **Smart NKP Bundle management** - Auto-detects existing bundles, downloads if needed, extracts binaries
@@ -156,10 +156,10 @@ This method guides you through the entire deployment process interactively with 
     | **Storage Container** | Select the storage container for persistent volumes | `SelfServiceContainer` |
     | **VM Image Name** | Select the NKP Rocky image from Prism Central | `nkp-rocky-9.6-release-cis-1.34.1...qcow2` |
     | **Cluster Name** | Desired NKP cluster name (lowercase) | `prod-cluster` |
-    | **Control Plane VIP** | Static IP for control plane (prefilled with network prefix) | `10.0.0.50` |
-    | **LB IP Range** | Load balancer range (prefilled with network prefix) | `10.0.0.100-10.0.0.110` |
-    | **Control Plane Replicas** | Number of control plane nodes (1-5, default: 1) | `1` |
-    | **Worker Replicas** | Number of worker nodes (1-10, default: 3) | `3` |
+    | **Control Plane VIP** | Network prefix is fixed; enter only the host octet(s) | `50` → `10.0.0.50` |
+    | **LB IP Range** | Enter the starting host octet(s), then select the number of IPs | `100`, `10 IPs` → `10.0.0.100-10.0.0.109` |
+    | **Control Plane Replicas** | Select the number of control plane nodes | `1`, `3`, or `5` |
+    | **Worker Replicas** | Select the number of worker nodes | `1`-`10` |
 
 3. Review the final deployment summary and confirm to proceed.
 

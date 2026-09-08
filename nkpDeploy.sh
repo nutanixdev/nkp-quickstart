@@ -3,6 +3,7 @@
 # --- ANSI Color Codes ---
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
+PURPLE='\033[38;5;141m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
@@ -252,6 +253,8 @@ modern_select() {
     local CURRENT=0 OFFSET=0 KEY KEY2
     local VISIBLE=12
     local OLD_STTY
+    local MENU_WIDTH=72
+    local MENU_LINE='────────────────────────────────────────────────────────────────────────'
 
     [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
     [[ -c /dev/tty ]] || return 1
@@ -263,6 +266,7 @@ modern_select() {
         printf '\033[2J\033[H' >&2
         printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n' >&2
         printf '\033[38;5;141m  %s\033[0m\n\n' "$LABEL" >&2
+        printf '\033[38;5;141m  ╭%s╮\033[0m\n' "$MENU_LINE" >&2
 
         (( CURRENT < OFFSET )) && OFFSET=$CURRENT
         (( CURRENT >= OFFSET + VISIBLE )) && OFFSET=$((CURRENT - VISIBLE + 1))
@@ -271,13 +275,18 @@ modern_select() {
 
         local INDEX
         for ((INDEX=OFFSET; INDEX<END; INDEX++)); do
+            local DISPLAY_VALUE="${OPTIONS[$INDEX]}"
+            (( ${#DISPLAY_VALUE} > MENU_WIDTH - 6 )) && DISPLAY_VALUE="${DISPLAY_VALUE:0:MENU_WIDTH-9}..."
             if (( INDEX == CURRENT )); then
-                printf '\033[48;5;99m\033[97m  > %-96s\033[0m\n' "${OPTIONS[$INDEX]}" >&2
+                printf '\033[38;5;141m  │\033[0m\033[48;5;99m\033[97m  > %-*s\033[0m\033[38;5;141m│\033[0m\n' \
+                    "$((MENU_WIDTH - 4))" "$DISPLAY_VALUE" >&2
             else
-                printf '    %s\n' "${OPTIONS[$INDEX]}" >&2
+                printf '\033[38;5;141m  │\033[0m    %-*s\033[38;5;141m│\033[0m\n' \
+                    "$((MENU_WIDTH - 4))" "$DISPLAY_VALUE" >&2
             fi
         done
-        printf '\n\033[38;5;141m  %d/%d\033[0m   ↑/↓ navigate   Enter select   q quit\n' \
+        printf '\033[38;5;141m  ╰%s╯\033[0m\n' "$MENU_LINE" >&2
+        printf '\033[38;5;141m  %d/%d\033[0m   ↑/↓ navigate   Enter select   q quit\n' \
             "$((CURRENT + 1))" "${#OPTIONS[@]}" >&2
 
         IFS= read -r -s -n 1 -u 3 KEY < /dev/tty
@@ -392,19 +401,73 @@ ip2int() {
     echo "$(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))"
 }
 
-# Return a usable input prefix for the selected network.  For a /24 this is
-# the requested first-three-octets UX; for other masks the network address is
-# used as a safe starting point and the full CIDR is shown to the user.
+# Return the fixed network portion of an address. The editable portion is
+# entered separately so users cannot accidentally change the network prefix.
 network_input_prefix() {
     local IP="$1"
     local PREFIX="$2"
-    local A B C D
+    local A B C D FULL_OCTETS
     IFS=. read -r A B C D <<< "$IP"
-    if (( PREFIX >= 24 )); then
-        echo "${A}.${B}.${C}."
+    FULL_OCTETS=$((PREFIX / 8))
+    case "$FULL_OCTETS" in
+        0) echo "" ;;
+        1) echo "${A}." ;;
+        2) echo "${A}.${B}." ;;
+        3) echo "${A}.${B}.${C}." ;;
+        *) echo "${A}.${B}.${C}.${D}" ;;
+    esac
+}
+
+host_octet_count() {
+    local PREFIX="$1"
+    local COUNT=$((4 - PREFIX / 8))
+    (( COUNT < 1 )) && COUNT=1
+    echo "$COUNT"
+}
+
+suffix_from_ip() {
+    local IP="$1"
+    local PREFIX="$2"
+    local FIXED_PREFIX
+    FIXED_PREFIX=$(network_input_prefix "$SUBNET_NETWORK_IP" "$PREFIX")
+    if [[ "$IP" == "$FIXED_PREFIX"* ]]; then
+        echo "${IP#"$FIXED_PREFIX"}"
     else
-        echo "${IP}"
+        echo ""
     fi
+}
+
+int2ip() {
+    local VALUE="$1"
+    echo "$(( (VALUE >> 24) & 255 )).$(( (VALUE >> 16) & 255 )).$(( (VALUE >> 8) & 255 )).$(( VALUE & 255 ))"
+}
+
+modern_host_prompt() {
+    local LABEL="$1"
+    local FIXED_PREFIX="$2"
+    local DEFAULT_SUFFIX="$3"
+    local HOST_OCTETS="$4"
+    local VALUE="" OCTET_WORD="octet"
+    (( HOST_OCTETS != 1 )) && OCTET_WORD="octets"
+
+    printf '\033[2J\033[H' >&2
+    printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n' >&2
+    printf '\033[38;5;141m  %s\033[0m\n\n' "$LABEL" >&2
+    printf '  Fixed network prefix: \033[1;37m%s\033[0m\n' "${FIXED_PREFIX:-<none>}" >&2
+    if [[ -n "$DEFAULT_SUFFIX" ]]; then
+        printf '  Enter %s host %s [%s]: ' "$HOST_OCTETS" "$OCTET_WORD" "$DEFAULT_SUFFIX" >&2
+    else
+        printf '  Enter %s host %s: ' "$HOST_OCTETS" "$OCTET_WORD" >&2
+    fi
+    IFS= read -r VALUE < /dev/tty
+    [[ -z "$VALUE" && -n "$DEFAULT_SUFFIX" ]] && VALUE="$DEFAULT_SUFFIX"
+    printf '%s' "$VALUE"
+}
+
+prompt_host_suffix() {
+    local LABEL="$1"
+    local DEFAULT_SUFFIX="$2"
+    REPLY=$(modern_host_prompt "$LABEL" "$SUBNET_INPUT_PREFIX" "$DEFAULT_SUFFIX" "$SUBNET_HOST_OCTETS") || exit 0
 }
 
 api_failed() {
@@ -470,6 +533,58 @@ validate_vm_image() {
         fi
     fi
     echo ""
+}
+
+summary_row() {
+    local LABEL="$1"
+    local VALUE="$2"
+    local PURPLE='\033[38;5;141m'
+    local DIM='\033[38;5;245m'
+    local RESET='\033[0m'
+    VALUE="${VALUE//$'\n'/ }"
+    (( ${#VALUE} > 41 )) && VALUE="${VALUE:0:38}..."
+    printf '%b│%b %b%-28s%b │ %-41s %b│%b\n' "$PURPLE" "$RESET" "$DIM" "$LABEL" "$RESET" "$VALUE" "$PURPLE" "$RESET"
+}
+
+render_final_summary() {
+    local PURPLE='\033[38;5;141m'
+    local WHITE='\033[97m'
+    local DIM='\033[38;5;245m'
+    local RESET='\033[0m'
+    local LINE='──────────────────────────────────────────────────────────────────────────────'
+
+    printf '\033[2J\033[H'
+    printf '%b╭%s╮%b\n' "$PURPLE" "$LINE" "$RESET"
+    printf '%b│%b %bNKP DEPLOYMENT SUMMARY%b%*s%b│%b\n' \
+        "$PURPLE" "$RESET" "$WHITE" "$RESET" 48 "" "$PURPLE" "$RESET"
+    printf '%b├%s┤%b\n' "$PURPLE" "$LINE" "$RESET"
+    summary_row "NKP Version" "$VERSION_WITH_V"
+    summary_row "Prism Central" "$PC_ENDPOINT"
+    summary_row "Prism Central Version" "$PC_RAW"
+    summary_row "AOS Version" "$AOS_VERSION"
+    summary_row "Cluster Name" "$CLUSTER_NAME"
+    summary_row "AHV Cluster" "$AHV_CLUSTER"
+    summary_row "AHV Network" "$NETWORK"
+    summary_row "Network CIDR" "$SUBNET_CIDR"
+    summary_row "Control Plane VIP" "$VIP"
+    summary_row "Load Balancer Range" "$LB_RANGE"
+    summary_row "VM Image" "$VM_IMAGE"
+    summary_row "Storage Container" "$STORAGE"
+    summary_row "Control Plane Nodes" "$CP_REPLICAS"
+    summary_row "Worker Nodes" "$WORKER_REPLICAS"
+    summary_row "Kubeconfig" "$KUBECONFIG"
+    printf '%b╰%s╯%b\n\n' "$PURPLE" "$LINE" "$RESET"
+    printf '%b  Controls:  [Y] deploy   [N] exit%b\n' "$DIM" "$RESET"
+}
+
+final_summary_confirmation() {
+    local CONFIRM=""
+    printf '\n  Proceed with deployment? [Y/n]: ' >&2
+    IFS= read -r CONFIRM < /dev/tty
+    [[ -z "$CONFIRM" ]] && CONFIRM="Y"
+    [[ "$CONFIRM" =~ ^[Nn]$ ]] && return 1
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || return 2
+    return 0
 }
 
 # ============================================================
@@ -818,48 +933,86 @@ while true; do
     CLUSTER_NAME_DEFAULT=""
 done
 
-VIP_DEFAULT=$(get_default "vip")
-if [[ -z "$VIP_DEFAULT" ]] || ! validate_ipv4 "$VIP_DEFAULT" || ! is_in_same_subnet "$VIP_DEFAULT" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
-    VIP_DEFAULT="$SUBNET_INPUT_PREFIX"
-fi
+validate_host_suffix() {
+    local SUFFIX="$1"
+    local PARTS
+    local CANDIDATE="${SUBNET_INPUT_PREFIX}${SUFFIX}"
+    IFS='.' read -r -a PARTS <<< "$SUFFIX"
+    [[ ${#PARTS[@]} -eq "$SUBNET_HOST_OCTETS" ]] || return 1
+    validate_ipv4 "$CANDIDATE"
+}
+
+default_host_suffix() {
+    local A B C D
+    IFS=. read -r A B C D <<< "$SUBNET_NETWORK_IP"
+    case "$SUBNET_HOST_OCTETS" in
+        1) echo "100" ;;
+        2) echo "${C}.100" ;;
+        3) echo "${B}.${C}.100" ;;
+        *) echo "${A}.${B}.${C}.100" ;;
+    esac
+}
+
+SUBNET_HOST_OCTETS=$(host_octet_count "$SUBNET_PREFIX_LENGTH")
+VIP_SAVED=$(get_default "vip")
+VIP_SUFFIX_DEFAULT=$(suffix_from_ip "$VIP_SAVED" "$SUBNET_PREFIX_LENGTH")
 while true; do
-    prompt_text "Control Plane VIP (network ${SUBNET_CIDR})" "$VIP_DEFAULT" VIP ip
-    VIP="$REPLY"
-    if validate_ipv4 "$VIP" && is_in_same_subnet "$VIP" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
+    prompt_host_suffix "Control Plane VIP (${SUBNET_CIDR})" "$VIP_SUFFIX_DEFAULT"
+    VIP_SUFFIX="$REPLY"
+    VIP="${SUBNET_INPUT_PREFIX}${VIP_SUFFIX}"
+    if validate_host_suffix "$VIP_SUFFIX" && is_in_same_subnet "$VIP" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
         break
     fi
     show_message "The Control Plane VIP must be a valid address inside ${SUBNET_CIDR}."
-    VIP_DEFAULT="$SUBNET_INPUT_PREFIX"
+    VIP_SUFFIX_DEFAULT=""
 done
 
 LB_SAVED=$(get_default "lb_range")
-LB_START_DEFAULT="${LB_SAVED%%-*}"
-LB_END_DEFAULT="${LB_SAVED##*-}"
-if [[ -z "$LB_SAVED" || "$LB_SAVED" == "$LB_START_DEFAULT" ]]; then
-    LB_START_DEFAULT="${SUBNET_INPUT_PREFIX}100"
-    LB_END_DEFAULT="${SUBNET_INPUT_PREFIX}110"
+LB_START_SAVED="${LB_SAVED%%-*}"
+LB_END_SAVED="${LB_SAVED##*-}"
+LB_START_SUFFIX_DEFAULT=$(suffix_from_ip "$LB_START_SAVED" "$SUBNET_PREFIX_LENGTH")
+[[ -z "$LB_START_SUFFIX_DEFAULT" ]] && LB_START_SUFFIX_DEFAULT=$(default_host_suffix)
+LB_COUNT_DEFAULT=10
+if validate_ipv4 "$LB_START_SAVED" && validate_ipv4 "$LB_END_SAVED" && \
+   (( $(ip2int "$LB_END_SAVED") >= $(ip2int "$LB_START_SAVED") )); then
+    LB_COUNT_DEFAULT=$(( $(ip2int "$LB_END_SAVED") - $(ip2int "$LB_START_SAVED") + 1 ))
 fi
+(( LB_COUNT_DEFAULT < 1 || LB_COUNT_DEFAULT > 254 )) && LB_COUNT_DEFAULT=10
+
 while true; do
-    prompt_text "Load Balancer range start IP (network ${SUBNET_CIDR})" "$LB_START_DEFAULT" LB_START ip
-    LB_START="$REPLY"
-    prompt_text "Load Balancer range end IP (network ${SUBNET_CIDR})" "$LB_END_DEFAULT" LB_END ip
-    LB_END="$REPLY"
-    if validate_ipv4 "$LB_START" && validate_ipv4 "$LB_END" && \
-       is_in_same_subnet "$LB_START" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH" && \
-       is_in_same_subnet "$LB_END" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH" && \
-       (( $(ip2int "$LB_START") <= $(ip2int "$LB_END") )); then
+    prompt_host_suffix "Load Balancer range start (${SUBNET_CIDR})" "$LB_START_SUFFIX_DEFAULT"
+    LB_START_SUFFIX="$REPLY"
+    LB_START="${SUBNET_INPUT_PREFIX}${LB_START_SUFFIX}"
+    if ! validate_host_suffix "$LB_START_SUFFIX" || ! is_in_same_subnet "$LB_START" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
+        show_message "The Load Balancer start must be inside ${SUBNET_CIDR}."
+        LB_START_SUFFIX_DEFAULT=""
+        continue
+    fi
+
+    LB_COUNT_OPTIONS=("$LB_COUNT_DEFAULT")
+    for ((COUNT=1; COUNT<=254; COUNT++)); do
+        [[ "$COUNT" == "$LB_COUNT_DEFAULT" ]] || LB_COUNT_OPTIONS+=("$COUNT")
+    done
+    SELECTED_INDEX=$(select_option "How many Load Balancer IPs should be reserved?" "${LB_COUNT_OPTIONS[@]}") || exit 1
+    LB_COUNT="${LB_COUNT_OPTIONS[$((SELECTED_INDEX - 1))]}"
+    LB_END_VALUE=$(( $(ip2int "$LB_START") + LB_COUNT - 1 ))
+    if (( LB_END_VALUE <= 4294967295 )); then
+        LB_END=$(int2ip "$LB_END_VALUE")
+    else
+        LB_END=""
+    fi
+
+    if validate_ipv4 "$LB_END" && is_in_same_subnet "$LB_END" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
         LB_RANGE="${LB_START}-${LB_END}"
         break
     fi
-    show_message "The Load Balancer range must contain valid, ordered IP addresses inside ${SUBNET_CIDR}."
-    LB_START_DEFAULT="${SUBNET_INPUT_PREFIX}100"
-    LB_END_DEFAULT="${SUBNET_INPUT_PREFIX}110"
+    show_message "That range does not fit inside ${SUBNET_CIDR}; choose a lower start or a smaller count."
 done
 
 # OPTIONAL: DEPLOYMENT SIZING
 echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${CYAN}      OPTIONAL: Deployment Sizing${NC}"
-echo -e "${YELLOW}(Press Enter to use defaults)${NC}"
+echo -e "${PURPLE}      OPTIONAL: Deployment Sizing${NC}"
+echo -e "${CYAN}(Select the desired values)${NC}"
 echo -e "${YELLOW}=======================================================${NC}"
 
 # License tier — affects default worker count
@@ -871,29 +1024,27 @@ else
     LICENSE_DEFAULT=2
 fi
 
-# Control plane replicas — default from saved or fall back to 1
+# Control plane replicas — selectable, default from saved or fall back to 1
 CP_REPLICAS_DEFAULT=$(get_default "cp_replicas")
 CP_REPLICAS_DEFAULT=${CP_REPLICAS_DEFAULT:-1}
-while true; do
-    prompt_text "Control Plane Replicas (1, 3, or 5)" "$CP_REPLICAS_DEFAULT" CP_REPLICAS
-    CP_REPLICAS="$REPLY"
-    if [[ "$CP_REPLICAS" =~ ^[135]$ ]]; then
-        break
-    fi
-    echo -e "${RED}Error: Control plane replicas must be an odd number (1, 3, or 5) for proper quorum.${NC}"
+CP_OPTIONS=()
+[[ "$CP_REPLICAS_DEFAULT" =~ ^[135]$ ]] && CP_OPTIONS+=("$CP_REPLICAS_DEFAULT")
+for REPLICA_OPTION in 1 3 5; do
+    [[ "$REPLICA_OPTION" == "$CP_REPLICAS_DEFAULT" ]] || CP_OPTIONS+=("$REPLICA_OPTION")
 done
+SELECTED_INDEX=$(select_option "Select the Control Plane node count" "${CP_OPTIONS[@]}") || exit 1
+CP_REPLICAS="${CP_OPTIONS[$((SELECTED_INDEX - 1))]}"
 
-# Worker replicas — default from saved, else from licensing answer
+# Worker replicas — selectable, default from saved, else from licensing answer
 WORKER_REPLICAS_DEFAULT=$(get_default "worker_replicas")
 WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-$LICENSE_DEFAULT}
-while true; do
-    prompt_text "Worker Replicas (1-10)" "$WORKER_REPLICAS_DEFAULT" WORKER_REPLICAS
-    WORKER_REPLICAS="$REPLY"
-    if [[ "$WORKER_REPLICAS" =~ ^([1-9]|10)$ ]]; then
-        break
-    fi
-    echo -e "${RED}Error: Must be a number between 1 and 10.${NC}"
+WORKER_OPTIONS=()
+[[ "$WORKER_REPLICAS_DEFAULT" =~ ^([1-9]|10)$ ]] && WORKER_OPTIONS+=("$WORKER_REPLICAS_DEFAULT")
+for REPLICA_OPTION in {1..10}; do
+    [[ "$REPLICA_OPTION" == "$WORKER_REPLICAS_DEFAULT" ]] || WORKER_OPTIONS+=("$REPLICA_OPTION")
 done
+SELECTED_INDEX=$(select_option "Select the Worker node count" "${WORKER_OPTIONS[@]}") || exit 1
+WORKER_REPLICAS="${WORKER_OPTIONS[$((SELECTED_INDEX - 1))]}"
 
 # ============================================================
 # SAVE DEFAULTS — written immediately after inputs
@@ -959,56 +1110,6 @@ fi
 echo -e "${GREEN}--> Version validation passed.${NC}"
 
 # ============================================================
-# SUMMARY LOOP — includes image validation
-# ============================================================
-VM_IMAGE_VALID=false
-
-while true; do
-    clear
-    echo -e "${YELLOW}=======================================================${NC}"
-    echo -e "${YELLOW}           FINAL DEPLOYMENT SUMMARY                    ${NC}"
-    echo -e "${YELLOW}=======================================================${NC}"
-    printf "${CYAN}%-25s${NC} : %s\n" "NKP Version"           "$VERSION_WITH_V"
-    printf "${CYAN}%-25s${NC} : %s\n" "Prism Central Version"  "$PC_RAW"
-    printf "${CYAN}%-25s${NC} : %s\n" "AOS Version"            "$AOS_VERSION"
-    printf "${CYAN}%-25s${NC} : %s\n" "Cluster Name"           "$CLUSTER_NAME"
-    printf "${CYAN}%-25s${NC} : %s\n" "PC Endpoint"            "$PC_ENDPOINT"
-    printf "${CYAN}%-25s${NC} : %s\n" "Control Plane VIP"      "$VIP"
-    printf "${CYAN}%-25s${NC} : %s\n" "VM Image Name"          "$VM_IMAGE"
-    printf "${CYAN}%-25s${NC} : %s\n" "AHV Cluster Name"       "$AHV_CLUSTER"
-    printf "${CYAN}%-25s${NC} : %s\n" "AHV Network Name"       "$NETWORK"
-    printf "${CYAN}%-25s${NC} : %s\n" "AHV Network CIDR"       "$SUBNET_CIDR"
-    printf "${CYAN}%-25s${NC} : %s\n" "Storage Container"      "$STORAGE"
-    printf "${CYAN}%-25s${NC} : %s\n" "Load Balancer Range"    "$LB_RANGE"
-    printf "${CYAN}%-25s${NC} : %s\n" "Pod CIDR"               "100.64.0.0/14"
-    printf "${CYAN}%-25s${NC} : %s\n" "Service CIDR"           "100.68.0.0/16"
-    printf "${CYAN}%-25s${NC} : %s\n" "Control Plane Replicas" "$CP_REPLICAS"
-    printf "${CYAN}%-25s${NC} : %s\n" "Worker Replicas"        "$WORKER_REPLICAS"
-    echo -e "${YELLOW}=======================================================${NC}"
-
-    # Validate image — show result inline in summary
-    echo -ne "${CYAN}Validating VM image against Prism Central...${NC} "
-    validate_vm_image "$VM_IMAGE"
-
-    if [[ "$VM_IMAGE_VALID" == true ]]; then
-        echo -e "${GREEN}  ✔  Image '${VM_IMAGE}' found on Prism Central.${NC}"
-        echo ""
-        prompt_text "Proceed with deployment? Enter Y or N" "Y" CONFIRM
-        CONFIRM="$REPLY"
-        [[ "$CONFIRM" =~ ^[Nn]$ ]] && exit 0
-        break
-    else
-        # validate_vm_image already printed the candidate list
-        prompt_text "Enter the correct VM Image Name" "$VM_IMAGE" NEW_IMAGE
-        NEW_IMAGE="$REPLY"
-        if [[ -n "$NEW_IMAGE" ]]; then
-            VM_IMAGE="$NEW_IMAGE"
-            save_defaults
-        fi
-    fi
-done
-
-# ============================================================
 # SSH KEY SETUP
 # ============================================================
 echo -e "${CYAN}Setting up SSH key...${NC}"
@@ -1071,23 +1172,43 @@ if [[ $LOAD_EXIT -ne 0 ]]; then
 fi
 echo -e "${GREEN}--> Konvoy bootstrap image loaded successfully.${NC}"
 
-# ============================================================
-# DEPLOYMENT
-# ============================================================
+# Prepare the kubeconfig location before rendering the final screen so the
+# summary really is the last review surface before deployment.
 export NUTANIX_USER
 export NUTANIX_PASSWORD
 export NUTANIX_ENDPOINT="https://${PC_ENDPOINT}:9440"
 export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}.conf"
 
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${YELLOW}           KUBECONFIG LOCATION                          ${NC}"
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${CYAN}Your kubeconfig will be saved in:${NC}"
-echo -e "  ${GREEN}${KUBECONFIG}${NC}"
-echo -e "${YELLOW}This file is required to access the cluster.${NC}"
-echo -e "${YELLOW}Ensure this location is persistent and backed up.${NC}"
-echo -e "${YELLOW}=======================================================${NC}"
+# ============================================================
+# FINAL SUMMARY — the last screen before deployment
+# ============================================================
+VM_IMAGE_VALID=false
+while true; do
+    render_final_summary
+    printf '\033[38;5;141m  Validating VM image against Prism Central...\033[0m\n' >&2
+    validate_vm_image "$VM_IMAGE"
 
+    if [[ "$VM_IMAGE_VALID" == true ]]; then
+        printf '\033[38;5;46m  ✓ Image is available on Prism Central.\033[0m\n\n' >&2
+        if final_summary_confirmation; then
+            break
+        elif [[ $? -eq 1 ]]; then
+            exit 0
+        fi
+        continue
+    fi
+
+    prompt_text "Enter the correct VM Image Name" "$VM_IMAGE" NEW_IMAGE
+    NEW_IMAGE="$REPLY"
+    if [[ -n "$NEW_IMAGE" ]]; then
+        VM_IMAGE="$NEW_IMAGE"
+        save_defaults
+    fi
+done
+
+# ============================================================
+# DEPLOYMENT
+# ============================================================
 echo -e "${GREEN}Starting Deployment...${NC}"
 nkp create cluster nutanix \
   $BUNDLE_FLAGS \
