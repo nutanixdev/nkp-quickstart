@@ -287,7 +287,9 @@ frame_footer() {
     local RESET='\033[0m'
     printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
     frame_row "  Controls: $CONTROLS"
-    printf '%b╰%s╯%b\033[?7h\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    # The bottom border occupies the terminal's last row. Do not emit a
+    # trailing newline here or the terminal scrolls and hides the top border.
+    printf '%b╰%s╯%b\033[?7h' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
 }
 
 show_progress() {
