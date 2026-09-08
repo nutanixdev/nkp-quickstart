@@ -120,7 +120,7 @@ Choose one of the following installation methods based on your needs:
 
 This method guides you through the entire deployment process interactively with automatic validation and error checking. It's ideal for first-time users and provides:
 
-- ✅ **Terminal UI selections** - Selects the AHV cluster, network, storage container, and VM image directly from Prism Central
+- ✅ **Modern terminal selections** - Uses a color keyboard-driven picker to select the AHV cluster, network, storage container, and VM image directly from Prism Central
 - ✅ **CIDR-aware network prompts** - Prefills the selected network prefix and validates the control-plane VIP and load-balancer range against its actual mask
 - ✅ **Automated system prerequisite validation** - Checks and configures cgroup v2 delegation automatically
 - ✅ **Smart NKP Bundle management** - Auto-detects existing bundles, downloads if needed, extracts binaries
@@ -176,7 +176,7 @@ This method guides you through the entire deployment process interactively with 
 
 #### What the Script Does
 
-- **Dependency Check:** Verifies `curl`, `jq`, and `tar`; uses `whiptail` for the terminal UI when available (the supplied cloud-init installs it)
+- **Dependency Check:** Verifies `curl`, `jq`, and `tar`; uses `whiptail` for text/password dialogs when available (the supplied cloud-init installs it)
 - **Prism Central Discovery:** Uses the v4 cluster, networking/subnet, storage-container, and image APIs to populate the selectable values
 - **System Prerequisites:** Checks/configures cgroup v2 delegation (may require reboot)
 - **Connectivity Check:** Verifies outbound access to Nutanix portal

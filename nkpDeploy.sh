@@ -76,7 +76,13 @@ call_curl_v4() {
             echo "${RESPONSE}" | awk -F '####' '{print $1}'
             ;;
         *)
-            echo "{\"httpStatus\": \"${HTTPSTATUS}\"}"
+            local ERROR_BODY
+            ERROR_BODY=$(echo "${RESPONSE}" | awk -F '####' '{print $1}')
+            jq -n \
+                --arg httpStatus "${HTTPSTATUS:-000}" \
+                --arg apiPath "$APIURL" \
+                --arg response "$ERROR_BODY" \
+                '{httpStatus: $httpStatus, apiPath: $apiPath, response: $response}'
             ;;
     esac
 }
@@ -235,44 +241,80 @@ prompt_password() {
     fi
 }
 
+modern_select() {
+    local LABEL="$1"
+    shift
+    local OPTIONS=("$@")
+    local CURRENT=0 OFFSET=0 KEY KEY2
+    local VISIBLE=12
+    local OLD_STTY
+
+    [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
+    [[ -c /dev/tty ]] || return 1
+
+    OLD_STTY=$(stty -g < /dev/tty) || return 1
+    stty -echo -icanon min 1 time 0 < /dev/tty || return 1
+
+    while true; do
+        printf '\033[2J\033[H' >&2
+        printf '\033[1;35m  NKP DEPLOYMENT\033[0m\n' >&2
+        printf '\033[38;5;141m  %s\033[0m\n\n' "$LABEL" >&2
+
+        (( CURRENT < OFFSET )) && OFFSET=$CURRENT
+        (( CURRENT >= OFFSET + VISIBLE )) && OFFSET=$((CURRENT - VISIBLE + 1))
+        local END=$((OFFSET + VISIBLE))
+        (( END > ${#OPTIONS[@]} )) && END=${#OPTIONS[@]}
+
+        local INDEX
+        for ((INDEX=OFFSET; INDEX<END; INDEX++)); do
+            if (( INDEX == CURRENT )); then
+                printf '\033[48;5;99m\033[97m  > %-96s\033[0m\n' "${OPTIONS[$INDEX]}" >&2
+            else
+                printf '    %s\n' "${OPTIONS[$INDEX]}" >&2
+            fi
+        done
+        printf '\n\033[38;5;141m  %d/%d\033[0m   ↑/↓ navigate   Enter select   q quit\n' \
+            "$((CURRENT + 1))" "${#OPTIONS[@]}" >&2
+
+        IFS= read -r -s -n 1 -u 3 KEY < /dev/tty
+        case "$KEY" in
+            $'\x1b')
+                IFS= read -r -s -n 2 -u 3 -t 0.1 KEY2 < /dev/tty || true
+                case "${KEY}${KEY2}" in
+                    $'\x1b[A') (( CURRENT > 0 )) && CURRENT=$((CURRENT - 1)) ;;
+                    $'\x1b[B') (( CURRENT < ${#OPTIONS[@]} - 1 )) && CURRENT=$((CURRENT + 1)) ;;
+                esac
+                ;;
+            $'\n'|$'\r')
+                stty "$OLD_STTY" < /dev/tty
+                printf '%s' "$((CURRENT + 1))"
+                return 0
+                ;;
+            q|Q)
+                stty "$OLD_STTY" < /dev/tty
+                return 1
+                ;;
+        esac
+    done
+}
+
 select_option() {
     local LABEL="$1"
     shift
     local OPTIONS=("$@")
-    local SELECTED=""
 
     if [[ ${#OPTIONS[@]} -eq 0 ]]; then
         echo -e "${RED}ERROR: No options were returned for ${LABEL}.${NC}" >&2
         return 1
     fi
 
-    if [[ -n "$TUI_BIN" ]]; then
-        local MENU_ARGS=()
-        local INDEX=1
-        local OPTION
-        for OPTION in "${OPTIONS[@]}"; do
-            MENU_ARGS+=("$INDEX" "$OPTION")
-            INDEX=$((INDEX + 1))
-        done
-
-        if [[ "$TUI_BIN" == "whiptail" ]]; then
-            SELECTED=$(whiptail --title "NKP Deployment" --menu "$LABEL" 20 100 12 "${MENU_ARGS[@]}" 3>&1 1>&2 2>&3) || exit 0
-        else
-            SELECTED=$(dialog --stdout --title "NKP Deployment" --menu "$LABEL" 20 100 12 "${MENU_ARGS[@]}") || exit 0
-        fi
-    else
-        echo -e "${CYAN}${LABEL}${NC}" >&2
-        local PS3="Select an option: "
-        select OPTION in "${OPTIONS[@]}"; do
-            if [[ -n "$OPTION" ]]; then
-                SELECTED="$REPLY"
-                break
-            fi
-            echo -e "${RED}Invalid selection.${NC}"
-        done
-    fi
-
-    printf '%s' "$SELECTED"
+    # The modern picker is dependency-free and works well over SSH.  The
+    # input/password helpers still use whiptail when available.
+    exec 3<> /dev/tty
+    modern_select "$LABEL" "${OPTIONS[@]}"
+    local RESULT=$?
+    exec 3>&-
+    return "$RESULT"
 }
 
 show_message() {
@@ -364,9 +406,15 @@ api_failed() {
 
 api_error_message() {
     local BODY="$1"
-    local STATUS
+    local STATUS API_PATH DETAIL
     STATUS=$(echo "$BODY" | jq -r '.httpStatus // "unknown"' 2>/dev/null)
-    printf 'Prism Central API request failed (HTTP %s).\n\nVerify the endpoint, credentials, and that port 9440 is reachable.' "$STATUS"
+    API_PATH=$(echo "$BODY" | jq -r '.apiPath // empty' 2>/dev/null)
+    DETAIL=$(echo "$BODY" | jq -r '
+        (.message // .error // .response // (.metadata.messages[0].message // empty))
+        | if type == "string" then . else tostring end
+    ' 2>/dev/null | tr '\n' ' ' | cut -c1-360)
+    [[ -z "$DETAIL" ]] && DETAIL="No response body was returned."
+    printf 'Prism Central API request failed (HTTP %s).\n\nEndpoint: %s\n\n%s' "$STATUS" "${API_PATH:-unknown}" "$DETAIL"
 }
 
 # ============================================================
@@ -647,6 +695,11 @@ AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$((SELECTED_INDEX - 1))]}"
 
 echo -e "${CYAN}Loading networks for ${AHV_CLUSTER}...${NC}"
 NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0.a1/config/subnets?\$limit=100")
+if api_failed "$NETWORK_RESPONSE"; then
+    # A few PC releases expose the same collection under the stable v4
+    # namespace instead of the v4.0.a1 preview namespace.
+    NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0/config/subnets?\$limit=100")
+fi
 if api_failed "$NETWORK_RESPONSE"; then
     show_message "$(api_error_message "$NETWORK_RESPONSE")"
     exit 1
