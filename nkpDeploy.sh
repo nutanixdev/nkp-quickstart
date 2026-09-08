@@ -271,7 +271,7 @@ frame_row() {
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
     (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
-    printf '%b│%b%-*s%b│%b\n' "$PURPLE" "$RESET" "$SCREEN_INNER" "$TEXT" "$PURPLE" "$RESET" >&2
+    printf '\033[2K\033[1G%b│%b%-*s%b│%b\n' "$PURPLE" "$RESET" "$SCREEN_INNER" "$TEXT" "$PURPLE" "$RESET" >&2
 }
 
 frame_row_color() {
@@ -280,7 +280,7 @@ frame_row_color() {
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
     (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
-    printf '%b│%b%b%-*s%b%b│%b\n' \
+    printf '\033[2K\033[1G%b│%b%b%-*s%b%b│%b\n' \
         "$PURPLE" "$RESET" "$COLOR" "$SCREEN_INNER" "$TEXT" "$RESET" "$PURPLE" "$RESET" >&2
 }
 
@@ -311,11 +311,11 @@ frame_footer() {
     local CONTROLS="$1"
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
-    printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    printf '\033[2K\033[1G%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
     frame_row "  Controls: $CONTROLS"
     # The bottom border occupies the terminal's last row. Do not emit a
     # trailing newline here or the terminal scrolls and hides the top border.
-    printf '%b╰%s╯%b\033[?7h' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    printf '\033[2K\033[1G%b╰%s╯%b\033[?7h' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
 }
 
 show_progress() {
@@ -582,7 +582,16 @@ show_message() {
 status_render() {
     local CONTROLS="${1:-Please wait...   Ctrl-C exit}"
     frame_setup
-    frame_header "${TUI_STATUS_TITLE:-NKP startup}"
+    if [[ "${STATUS_SCREEN_INITIALIZED:-0}" != 1 ||
+          "${STATUS_SCREEN_COLS:-}" != "$SCREEN_COLS" ||
+          "${STATUS_SCREEN_ROWS:-}" != "$SCREEN_ROWS" ]]; then
+        frame_header "${TUI_STATUS_TITLE:-NKP startup}"
+        STATUS_SCREEN_INITIALIZED=1
+        STATUS_SCREEN_COLS="$SCREEN_COLS"
+        STATUS_SCREEN_ROWS="$SCREEN_ROWS"
+    else
+        printf '\033[5;1H' >&2
+    fi
 
     local CONTENT_ROWS=$((SCREEN_ROWS - 7))
     local START=0
@@ -605,6 +614,7 @@ status_begin() {
     TUI_STATUS_TITLE="$1"
     TUI_STATUS_LINES=()
     TUI_STATUS_COLORS=()
+    STATUS_SCREEN_INITIALIZED=0
     status_render
 }
 
@@ -630,7 +640,18 @@ render_deployment_output() {
     local -a LOG_LINES=()
 
     frame_setup
-    frame_header "$TITLE"
+    if [[ "${DEPLOYMENT_SCREEN_INITIALIZED:-0}" != 1 ||
+          "${DEPLOYMENT_SCREEN_COLS:-}" != "$SCREEN_COLS" ||
+          "${DEPLOYMENT_SCREEN_ROWS:-}" != "$SCREEN_ROWS" ]]; then
+        frame_header "$TITLE"
+        DEPLOYMENT_SCREEN_INITIALIZED=1
+        DEPLOYMENT_SCREEN_COLS="$SCREEN_COLS"
+        DEPLOYMENT_SCREEN_ROWS="$SCREEN_ROWS"
+    else
+        printf '\033[3;1H' >&2
+        frame_row "  $TITLE"
+    fi
+    printf '\033[5;1H' >&2
     CONTENT_ROWS=$((SCREEN_ROWS - 7))
     while IFS= read -r LINE; do
         [[ -n "$LINE" ]] && LOG_LINES+=("$LINE")
