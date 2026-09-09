@@ -26,6 +26,9 @@ tui_configure_tmux_mouse() {
     local SESSION
     SESSION=$(tmux display-message -p '#S' 2>/dev/null) || return 0
     [[ -n "$SESSION" ]] && tmux set-option -t "$SESSION" mouse off 2>/dev/null || true
+    # Remove the temporary pass-through bindings from earlier versions.
+    tmux unbind-key -n WheelUpPane 2>/dev/null || true
+    tmux unbind-key -n WheelDownPane 2>/dev/null || true
 }
 
 tui_enter_screen() {
@@ -82,6 +85,8 @@ if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
     # Let the application receive mouse-wheel sequences instead of tmux
     # consuming them for pane scrolling.
     tmux set-option -t "$NKP_TMUX_SESSION" mouse off
+    tmux unbind-key -n WheelUpPane 2>/dev/null || true
+    tmux unbind-key -n WheelDownPane 2>/dev/null || true
     exec tmux attach-session -t "$NKP_TMUX_SESSION"
 fi
 
@@ -718,12 +723,27 @@ deployment_scroll_down() {
     fi
 }
 
+deployment_handle_mouse_button() {
+    local BUTTON="$1"
+    local CONTENT_ROWS="$2"
+    [[ "$BUTTON" =~ ^[0-9]+$ ]] || return 0
+    (( BUTTON >= 64 )) || return 0
+
+    # Wheel up/down are 64/65. The modulo also accepts modifier bits without
+    # treating horizontal wheel events as vertical scrolling.
+    case $(((BUTTON - 64) % 4)) in
+        0) deployment_scroll_up "$CONTENT_ROWS" 3 ;;
+        1) deployment_scroll_down "$CONTENT_ROWS" 3 ;;
+    esac
+}
+
 deployment_handle_key() {
     local KEY="$1"
     local CONTENT_ROWS="$2"
     local TOTAL=${#DEPLOY_LOG_LINES[@]}
     local MAX_START=$((TOTAL - CONTENT_ROWS))
     local KEY2 KEY3 KEY4 MOUSE_DATA MOUSE_CHAR BUTTON
+    local MOUSE_BUTTON MOUSE_X MOUSE_Y BUTTON_CODE
     (( MAX_START < 0 )) && MAX_START=0
 
     [[ -z "$KEY" ]] && return 0
@@ -742,14 +762,21 @@ deployment_handle_key() {
                         MOUSE_DATA+="$MOUSE_CHAR"
                     done
                     BUTTON="${MOUSE_DATA%%;*}"
-                    if [[ "$BUTTON" =~ ^[0-9]+$ ]] && (( BUTTON >= 64 )); then
-                        # Wheel up/down are 64/65. The modulo also accepts
-                        # terminal modifier bits without treating horizontal
-                        # wheel events as vertical scrolling.
-                        case $(((BUTTON - 64) % 4)) in
-                            0) deployment_scroll_up "$CONTENT_ROWS" 3 ;;
-                            1) deployment_scroll_down "$CONTENT_ROWS" 3 ;;
-                        esac
+                    deployment_handle_mouse_button "$BUTTON" "$CONTENT_ROWS"
+                    return 0
+                elif [[ "$KEY3" == "M" ]]; then
+                    # Older terminals and some tmux/SSH combinations use the
+                    # X10 format: ESC [ M button x y. Wheel values are sent
+                    # as ASCII 32 + 64/65.
+                    IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_BUTTON || true
+                    IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_X || true
+                    IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_Y || true
+                    if [[ -n "$MOUSE_BUTTON" ]]; then
+                        LC_ALL=C printf -v BUTTON_CODE '%d' "'$MOUSE_BUTTON"
+                        if [[ "$BUTTON_CODE" =~ ^[0-9]+$ ]]; then
+                            BUTTON=$((BUTTON_CODE - 32))
+                            deployment_handle_mouse_button "$BUTTON" "$CONTENT_ROWS"
+                        fi
                     fi
                     return 0
                 fi
@@ -786,6 +813,10 @@ deployment_handle_key() {
             esac
             ;;
         $'\n'|$'\r')
+            DEPLOY_REVIEW_DONE=1
+            ;;
+        $'\x03')
+            DEPLOY_CANCELLED=1
             DEPLOY_REVIEW_DONE=1
             ;;
     esac
@@ -1831,6 +1862,7 @@ DEPLOY_COMMAND=(
 NKP_PID=$!
 DEPLOY_SCROLL_OFFSET=0
 DEPLOY_SCROLL_FOLLOW=1
+DEPLOY_CANCELLED=0
 DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || exit 1
 stty -echo -icanon min 0 time 0 < /dev/tty
 exec 3<>/dev/tty
@@ -1842,6 +1874,10 @@ while deployment_process_running "$NKP_PID"; do
     DEPLOY_KEY=""
     IFS= read -r -s -n 1 -t 0.05 -u 3 DEPLOY_KEY || true
     deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
+    if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
+        kill "$NKP_PID" 2>/dev/null || true
+        break
+    fi
     render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End follow   Ctrl-C exit"
     sleep 0.25
 done
@@ -1851,6 +1887,9 @@ exec 3>&-
 wait "$NKP_PID"
 NKP_EXIT=$?
 NKP_PID=""
+if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
+    exit 130
+fi
 load_deployment_output "$DEPLOY_LOG"
 capture_dashboard_success
 deployment_review "$DEPLOY_LOG" "Deployment result"
