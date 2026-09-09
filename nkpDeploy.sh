@@ -650,13 +650,82 @@ status_pause() {
     IFS= read -r _ < /dev/tty
 }
 
+load_deployment_output() {
+    local LOG_FILE="$1"
+    DEPLOY_LOG_LINES=()
+    while IFS= read -r DEPLOY_LINE; do
+        [[ -n "$DEPLOY_LINE" ]] && DEPLOY_LOG_LINES+=("$DEPLOY_LINE")
+    done < <(
+        sed -E \
+            -e 's/\x1B\][^\x07]*\x07//g' \
+            -e 's/\x1B\[[0-9;:<>?]*[ -/]*[@-~]//g' \
+            -e 's/\x1B[0-9A-Za-z]//g' \
+            -e 's/\x1B[ -/]*[0-~]//g' \
+            -e 's/\r//g' \
+        "$LOG_FILE" | tr -d '\000-\010\013\014\016-\037\177'
+    )
+}
+
+deployment_handle_key() {
+    local KEY="$1"
+    local CONTENT_ROWS="$2"
+    local TOTAL=${#DEPLOY_LOG_LINES[@]}
+    local MAX_START=$((TOTAL - CONTENT_ROWS))
+    local KEY2
+    (( MAX_START < 0 )) && MAX_START=0
+
+    [[ -z "$KEY" ]] && return 0
+    case "$KEY" in
+        $'\x1b')
+            IFS= read -r -s -n 3 -t 0.05 -u 3 KEY2 || true
+            case "${KEY}${KEY2}" in
+                $'\x1b[A'|$'\x1b[H'|$'\x1b[1~')
+                    if [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]]; then
+                        DEPLOY_SCROLL_OFFSET=$MAX_START
+                        DEPLOY_SCROLL_FOLLOW=0
+                    fi
+                    (( DEPLOY_SCROLL_OFFSET > 0 )) && DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET - 1))
+                    ;;
+                $'\x1b[B')
+                    [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]] && return 0
+                    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET + 1))
+                    (( DEPLOY_SCROLL_OFFSET >= MAX_START )) && DEPLOY_SCROLL_FOLLOW=1
+                    ;;
+                $'\x1b[5~')
+                    if [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]]; then
+                        DEPLOY_SCROLL_OFFSET=$MAX_START
+                        DEPLOY_SCROLL_FOLLOW=0
+                    fi
+                    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET - CONTENT_ROWS))
+                    (( DEPLOY_SCROLL_OFFSET < 0 )) && DEPLOY_SCROLL_OFFSET=0
+                    ;;
+                $'\x1b[6~')
+                    [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]] && return 0
+                    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET + CONTENT_ROWS))
+                    if (( DEPLOY_SCROLL_OFFSET >= MAX_START )); then
+                        DEPLOY_SCROLL_FOLLOW=1
+                        DEPLOY_SCROLL_OFFSET=0
+                    fi
+                    ;;
+                $'\x1b[F'|$'\x1b[4~')
+                    DEPLOY_SCROLL_FOLLOW=1
+                    DEPLOY_SCROLL_OFFSET=0
+                    ;;
+            esac
+            ;;
+        $'\n'|$'\r')
+            DEPLOY_REVIEW_DONE=1
+            ;;
+    esac
+}
+
 render_deployment_output() {
     local TITLE="$1"
     local LOG_FILE="$2"
     local FOOTER="$3"
     local CONTENT_ROWS
     local LINE COLOR
-    local -a LOG_LINES=()
+    local START END TOTAL INDEX
 
     frame_setup
     if [[ "${DEPLOYMENT_SCREEN_INITIALIZED:-0}" != 1 ||
@@ -672,20 +741,21 @@ render_deployment_output() {
     fi
     printf '\033[5;1H' >&2
     CONTENT_ROWS=$((SCREEN_ROWS - 7))
-    while IFS= read -r LINE; do
-        [[ -n "$LINE" ]] && LOG_LINES+=("$LINE")
-    done < <(
-        tail -n "$CONTENT_ROWS" "$LOG_FILE" \
-            | sed -E \
-                -e 's/\x1B\][^\x07]*\x07//g' \
-                -e 's/\x1B\[[0-9;:<>?]*[ -/]*[@-~]//g' \
-                -e 's/\x1B[0-9A-Za-z]//g' \
-                -e 's/\x1B[ -/]*[@-~]//g' \
-                -e 's/\r//g' \
-            | tr -d '\000-\010\013\014\016-\037\177'
-    )
+    load_deployment_output "$LOG_FILE"
+    TOTAL=${#DEPLOY_LOG_LINES[@]}
 
-    for LINE in "${LOG_LINES[@]}"; do
+    if [[ "${DEPLOY_SCROLL_FOLLOW:-1}" == 1 ]]; then
+        START=$((TOTAL - CONTENT_ROWS))
+    else
+        START=${DEPLOY_SCROLL_OFFSET:-0}
+    fi
+    (( START < 0 )) && START=0
+    (( START > TOTAL )) && START=$TOTAL
+    END=$((START + CONTENT_ROWS))
+    (( END > TOTAL )) && END=$TOTAL
+
+    for ((INDEX=START; INDEX<END; INDEX++)); do
+        LINE="${DEPLOY_LOG_LINES[$INDEX]}"
         case "${LINE,,}" in
             *error*|*failed*|*fatal*) COLOR="$RED" ;;
             *warn*) COLOR="$YELLOW" ;;
@@ -694,11 +764,31 @@ render_deployment_output() {
         esac
         frame_row_color "$COLOR" "  $LINE"
     done
-    local INDEX
-    for ((INDEX=${#LOG_LINES[@]}; INDEX<CONTENT_ROWS; INDEX++)); do
+    for ((INDEX=END-START; INDEX<CONTENT_ROWS; INDEX++)); do
         frame_row ""
     done
     frame_footer "$FOOTER"
+}
+
+deployment_review() {
+    local LOG_FILE="$1"
+    local TITLE="$2"
+    local CONTENT_ROWS KEY
+    DEPLOY_REVIEW_DONE=0
+    DEPLOY_SCROLL_OFFSET=0
+    DEPLOY_SCROLL_FOLLOW=1
+    DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || return 1
+    stty -echo -icanon min 1 time 0 < /dev/tty || return 1
+    exec 3<>/dev/tty
+    while [[ "$DEPLOY_REVIEW_DONE" != 1 ]]; do
+        frame_setup
+        CONTENT_ROWS=$((SCREEN_ROWS - 7))
+        render_deployment_output "$TITLE" "$LOG_FILE" "↑/↓ scroll   PgUp/PgDn page   Home/End   Enter continue"
+        IFS= read -r -s -n 1 -u 3 KEY
+        deployment_handle_key "$KEY" "$CONTENT_ROWS"
+    done
+    stty "$DEPLOY_TTY_STATE" < /dev/tty
+    exec 3>&-
 }
 
 # ============================================================
@@ -1642,14 +1732,26 @@ DEPLOY_COMMAND=(
 
 "${DEPLOY_COMMAND[@]}" >"$DEPLOY_LOG" 2>&1 &
 NKP_PID=$!
+DEPLOY_SCROLL_OFFSET=0
+DEPLOY_SCROLL_FOLLOW=1
+DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || exit 1
+stty -echo -icanon min 0 time 0 < /dev/tty
+exec 3<>/dev/tty
 while kill -0 "$NKP_PID" 2>/dev/null; do
-    render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "Deployment running   Ctrl-C exit"
-    sleep 1
+    frame_setup
+    load_deployment_output "$DEPLOY_LOG"
+    DEPLOY_KEY=""
+    IFS= read -r -s -n 1 -t 0.05 -u 3 DEPLOY_KEY || true
+    deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
+    render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "↑/↓ scroll   PgUp/PgDn page   Home/End follow   Ctrl-C exit"
+    sleep 0.25
 done
+stty "$DEPLOY_TTY_STATE" < /dev/tty
+exec 3>&-
 wait "$NKP_PID"
 NKP_EXIT=$?
 NKP_PID=""
-render_deployment_output "Deployment result" "$DEPLOY_LOG" "Enter continue   Ctrl-C exit"
+deployment_review "$DEPLOY_LOG" "Deployment result"
 
 if [[ $NKP_EXIT -eq 0 ]]; then
     rm -f "$DEPLOY_LOG"
