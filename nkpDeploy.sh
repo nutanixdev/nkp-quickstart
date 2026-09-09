@@ -1,27 +1,100 @@
 #!/bin/bash
 
 # --- ANSI Color Codes ---
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
+PURPLE='\033[38;5;141m'
 RED='\033[0;31m'
+# Normal status variants intentionally resolve to the Nutanix purple theme.
+GREEN="$PURPLE"
+CYAN="$PURPLE"
+YELLOW="$PURPLE"
 NC='\033[0m'
+TUI_ALT_SCREEN_ACTIVE=0
 
-# --- Dependency Check ---
-echo -e "${CYAN}Verifying required dependencies...${NC}"
-REQUIRED_COMMANDS=("curl" "jq" "tar")
-for cmd in "${REQUIRED_COMMANDS[@]}"; do
-    if ! command -v "$cmd" &> /dev/null; then
-        echo -e "${RED}ERROR: Required command '$cmd' is not installed.${NC}"
-        echo -e "${YELLOW}Install on Rocky Linux with: ${CYAN}sudo yum install -y $cmd${NC}"
-        exit 1
+tui_enable_mouse() {
+    # Button tracking is enough for wheel events.  Motion tracking generates
+    # a large stream of packets while the pointer moves and can starve the
+    # deployment input loop over SSH/tmux.
+    printf '\033[?1000h\033[?1006h' >&2
+}
+
+tui_disable_mouse() {
+    printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' >&2
+}
+
+tui_configure_tmux_mouse() {
+    [[ -z "${TMUX:-}" ]] && return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    local SESSION
+    SESSION=$(tmux display-message -p '#S' 2>/dev/null) || return 0
+    [[ -n "$SESSION" ]] || return 0
+    # Let the application receive the terminal's mouse packets directly.
+    tmux set-option -t "$SESSION" mouse off 2>/dev/null || true
+    # Remove bindings from the earlier tmux pass-through experiment.
+    tmux unbind-key -n WheelUpPane 2>/dev/null || true
+    tmux unbind-key -n WheelDownPane 2>/dev/null || true
+}
+
+tui_enter_screen() {
+    if [[ "$TUI_ALT_SCREEN_ACTIVE" != 1 ]]; then
+        printf '\033[?1049h' >&2
+        TUI_ALT_SCREEN_ACTIVE=1
     fi
-done
-echo -e "${GREEN}--> All required dependencies verified.${NC}"
+}
+
+tui_restore_terminal() {
+    tui_disable_mouse
+    if [[ -c /dev/tty ]]; then
+        stty echo icanon < /dev/tty 2>/dev/null || true
+    fi
+    if [[ "$TUI_ALT_SCREEN_ACTIVE" == 1 ]]; then
+        printf '\033[?7h\033[?25h\033[0m\033[?1049l' >&2
+        TUI_ALT_SCREEN_ACTIVE=0
+    else
+        printf '\033[?7h\033[?25h\033[0m' >&2
+    fi
+}
+
+tui_cleanup() {
+    if [[ -n "${NKP_PID:-}" ]] && kill -0 "$NKP_PID" 2>/dev/null; then
+        kill "$NKP_PID" 2>/dev/null || true
+    fi
+    if [[ -n "${DEPLOY_LOG:-}" ]]; then
+        rm -f "$DEPLOY_LOG"
+    fi
+    tui_restore_terminal
+}
+
+trap tui_cleanup EXIT
 
 # --- Defaults file sits next to the script ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULTS_FILE="${SCRIPT_DIR}/nkpDeploy_defaults.json"
+COMPATIBILITY_FILE="${SCRIPT_DIR}/nkp_compatibility.json"
+
+# Keep the interactive deployment alive across SSH disconnects. A rerun from
+# outside tmux attaches to the existing session instead of starting a second
+# deployment; the nested process skips this block because TMUX is set.
+NKP_TMUX_SESSION="${NKP_TMUX_SESSION:-nkp-deploy}"
+if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
+    if ! tmux has-session -t "$NKP_TMUX_SESSION" 2>/dev/null; then
+        tmux new-session -d -s "$NKP_TMUX_SESSION" -c "$SCRIPT_DIR" \
+            "$SCRIPT_DIR/nkpDeploy.sh" "$@"
+    fi
+    tmux set-option -t "$NKP_TMUX_SESSION" status-style 'bg=colour141,fg=colour255'
+    tmux set-option -t "$NKP_TMUX_SESSION" status-left '  NKP DEPLOYMENT  '
+    tmux set-option -t "$NKP_TMUX_SESSION" status-right ' %H:%M '
+    tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-style 'bg=colour141,fg=colour255'
+    tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-current-style 'bg=colour141,fg=colour255,bold'
+    # Let the application receive the terminal's mouse packets directly.
+    tmux set-option -t "$NKP_TMUX_SESSION" mouse off
+    tmux unbind-key -n WheelUpPane 2>/dev/null || true
+    tmux unbind-key -n WheelDownPane 2>/dev/null || true
+    exec tmux attach-session -t "$NKP_TMUX_SESSION"
+fi
+
+# Apply this again from inside an already-attached session. This matters when
+# the script is re-run after the tmux session was created by an older version.
+tui_configure_tmux_mouse
 
 # ============================================================
 # HELPER: Inline v4 API call
@@ -35,7 +108,7 @@ call_curl_v4() {
 
     case "$REQUEST" in
         GET)
-            RESPONSE=$(curl -s -k -w '####%{response_code}' \
+            RESPONSE=$(curl -s -k --connect-timeout 10 --max-time 60 -w '####%{response_code}' \
                 -u "$PCADMIN:$PCPASSWD" \
                 --header 'accept: application/json' \
                 -H 'X-Nutanix-Client-Type: ui' \
@@ -43,7 +116,7 @@ call_curl_v4() {
                 --url "${URL}${APIURL}")
             ;;
         POST)
-            RESPONSE=$(curl -s -k -w '####%{response_code}' \
+            RESPONSE=$(curl -s -k --connect-timeout 10 --max-time 60 -w '####%{response_code}' \
                 -u "$PCADMIN:$PCPASSWD" \
                 --header 'accept: application/json' \
                 -H 'X-Nutanix-Client-Type: ui' \
@@ -61,7 +134,13 @@ call_curl_v4() {
             echo "${RESPONSE}" | awk -F '####' '{print $1}'
             ;;
         *)
-            echo "{\"httpStatus\": \"${HTTPSTATUS}\"}"
+            local ERROR_BODY
+            ERROR_BODY=$(echo "${RESPONSE}" | awk -F '####' '{print $1}')
+            jq -n \
+                --arg httpStatus "${HTTPSTATUS:-000}" \
+                --arg apiPath "$APIURL" \
+                --arg response "$ERROR_BODY" \
+                '{httpStatus: $httpStatus, apiPath: $apiPath, response: $response}'
             ;;
     esac
 }
@@ -74,6 +153,20 @@ get_default() {
     if [[ -f "$DEFAULTS_FILE" ]]; then
         jq -r --arg k "$KEY" '.[$k] // empty' "$DEFAULTS_FILE" 2>/dev/null
     fi
+}
+
+# Persist one validated connection field immediately so a later failure does
+# not require re-entering it. Passwords are never saved.
+save_connection_default() {
+    local KEY="$1"
+    local VALUE="$2"
+    local EXISTING='{}'
+    if [[ -f "$DEFAULTS_FILE" ]]; then
+        EXISTING=$(jq -c . "$DEFAULTS_FILE" 2>/dev/null || printf '{}')
+    fi
+    jq --arg key "$KEY" --arg value "$VALUE" \
+        '.[$key] = $value' \
+        <<< "$EXISTING" > "$DEFAULTS_FILE"
 }
 
 # ============================================================
@@ -146,6 +239,17 @@ get_input() {
             continue
         fi
 
+        if [[ "$MODE" == "ip" ]]; then
+            if ! validate_ipv4 "$TEMP_VAL"; then
+                echo -e "${RED}Error: Enter a valid IPv4 address.${NC}"
+                continue
+            fi
+            if [[ -n "${SUBNET_NETWORK_IP:-}" ]] && ! is_in_same_subnet "$TEMP_VAL" "$SUBNET_NETWORK_IP" "${SUBNET_PREFIX_LENGTH:-24}"; then
+                echo -e "${RED}Error: Address must be in the selected network (${SUBNET_NETWORK_IP}/${SUBNET_PREFIX_LENGTH}).${NC}"
+                continue
+            fi
+        fi
+
         if [[ "$MODE" == "range" ]]; then
             if [[ ! "$TEMP_VAL" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}-([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
                 echo -e "${RED}Error: Format must be x.x.x.x-y.y.y.y${NC}"
@@ -153,7 +257,11 @@ get_input() {
             fi
             local RANGE_START
             RANGE_START=$(echo "$TEMP_VAL" | cut -d'-' -f1)
-            if ! is_in_same_subnet "$VIP" "$RANGE_START"; then
+            if ! validate_ipv4 "$RANGE_START" || ! validate_ipv4 "${TEMP_VAL##*-}"; then
+                echo -e "${RED}Error: Enter valid IPv4 addresses in the range.${NC}"
+                continue
+            fi
+            if ! is_in_same_subnet "$VIP" "$RANGE_START" "${SUBNET_PREFIX_LENGTH:-24}"; then
                 echo -e "${RED}Error: LB Range must be in the same subnet as VIP ($VIP).${NC}"
                 continue
             fi
@@ -165,91 +273,1018 @@ get_input() {
 }
 
 # ============================================================
+# TUI HELPERS
+# ============================================================
+# These helpers keep the script usable over SSH. REPLY is intentionally
+# global so callers can use the same helper for both prompts and menus.
+prompt_text() {
+    local LABEL="$1"
+    local DEFAULT_VALUE="$2"
+    local VAR_NAME="$3"
+    local MODE="$4"
+
+    if [[ -c /dev/tty ]]; then
+        REPLY=$(modern_prompt "$LABEL" "$DEFAULT_VALUE" false) || exit 0
+    else
+        get_input "${LABEL}: " "$VAR_NAME" "$MODE"
+        REPLY="${!VAR_NAME}"
+    fi
+}
+
+prompt_password() {
+    local LABEL="$1"
+    if [[ -c /dev/tty ]]; then
+        REPLY=$(modern_prompt "$LABEL" "" true) || exit 0
+    else
+        while [[ -z "$REPLY" ]]; do
+            echo -ne "${YELLOW}${LABEL}: ${NC}"
+            read -rs REPLY
+            echo ""
+        done
+    fi
+}
+
+frame_setup() {
+    SCREEN_COLS=$(tput cols 2>/dev/null || echo 80)
+    SCREEN_ROWS=$(tput lines 2>/dev/null || echo 24)
+    [[ "$SCREEN_COLS" =~ ^[0-9]+$ ]] || SCREEN_COLS=80
+    [[ "$SCREEN_ROWS" =~ ^[0-9]+$ ]] || SCREEN_ROWS=24
+    (( SCREEN_COLS < 60 )) && SCREEN_COLS=60
+    (( SCREEN_ROWS < 16 )) && SCREEN_ROWS=16
+    SCREEN_INNER=$((SCREEN_COLS - 2))
+    printf -v FRAME_LINE '%*s' "$SCREEN_INNER" ''
+    FRAME_LINE="${FRAME_LINE// /─}"
+}
+
+frame_row() {
+    local TEXT="$1"
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
+    printf '\033[2K\033[1G%b│%b%s\033[%dG%b│%b\n' \
+        "$PURPLE" "$RESET" "$TEXT" "$SCREEN_COLS" "$PURPLE" "$RESET" >&2
+}
+
+frame_row_color() {
+    local COLOR="$1"
+    local TEXT="$2"
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
+    printf '\033[2K\033[1G%b│%b%b%s\033[%dG%b│%b\n' \
+        "$PURPLE" "$RESET" "$COLOR" "$TEXT" "$SCREEN_COLS" "$PURPLE" "$RESET" >&2
+}
+
+frame_header() {
+    local LABEL="$1"
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    # 3J clears terminal scrollback so each screen starts as a clean app view.
+    tui_enter_screen
+    printf '\033[?7l\033[?25l\033[3J\033[2J\033[H' >&2
+    printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    frame_row_color "$PURPLE" "  NKP DEPLOYMENT"
+    frame_row "  $LABEL"
+    printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+}
+
+frame_prompt_header() {
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    tui_enter_screen
+    printf '\033[?7l\033[?25h\033[3J\033[2J\033[H' >&2
+    printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    frame_row_color "$PURPLE" "  NKP DEPLOYMENT"
+    printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+}
+
+frame_footer() {
+    local CONTROLS="$1"
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    # Keep the terminal cursor from blinking over the bottom-right border.
+    printf '\033[?25l\033[2K\033[1G%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    frame_row "  Controls: $CONTROLS"
+    # The bottom border occupies the terminal's last row. Do not emit a
+    # trailing newline here or the terminal scrolls and hides the top border.
+    # Keep line wrapping disabled until tui_restore_terminal runs on exit.
+    printf '\033[2K\033[1G%b╰%s╯%b' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+}
+
+show_progress() {
+    local MESSAGE="$1"
+    frame_setup
+    frame_header "$MESSAGE"
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local INDEX
+    for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Please wait...   Ctrl-C exit"
+}
+
+modern_prompt() {
+    local LABEL="$1"
+    local DEFAULT_VALUE="$2"
+    local MASKED="$3"
+    local VALUE=""
+
+    frame_setup
+    frame_prompt_header
+    local INPUT_TEXT="  ${LABEL}: "
+    local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    if [[ "$MASKED" == true ]]; then
+        INPUT_TEXT="  Password: "
+        INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    fi
+    frame_row "$INPUT_TEXT"
+    # Save the cursor on the actual input row instead of relying on a
+    # terminal-specific absolute row calculation.
+    printf '\033[1A\033[%dG\033[s' "$INPUT_COLUMN" >&2
+    printf '\033[1B\033[1G' >&2
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local INDEX
+    for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Enter submit   Ctrl-C exit"
+    printf '\033[?25h\033[u' >&2
+    if [[ "$MASKED" == true ]]; then
+        IFS= read -r -s VALUE < /dev/tty
+        printf '\n' >&2
+    elif [[ -n "$DEFAULT_VALUE" ]]; then
+        IFS= read -r -e -i "$DEFAULT_VALUE" VALUE < /dev/tty
+    else
+        IFS= read -r VALUE < /dev/tty
+    fi
+
+    if [[ -z "$VALUE" && -n "$DEFAULT_VALUE" ]]; then
+        VALUE="$DEFAULT_VALUE"
+    fi
+    printf '%s' "$VALUE"
+}
+
+modern_select() {
+    local LABEL="$1"
+    shift
+    local OPTIONS=("$@")
+    local CURRENT=0 OFFSET=0 KEY KEY2
+    local OLD_STTY
+    local VISIBLE
+
+    [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
+    [[ -c /dev/tty ]] || return 1
+
+    OLD_STTY=$(stty -g < /dev/tty) || return 1
+    stty -echo -icanon min 1 time 0 < /dev/tty || return 1
+    frame_setup
+    VISIBLE=$((SCREEN_ROWS - 8))
+    (( VISIBLE < 3 )) && VISIBLE=3
+
+    while true; do
+        frame_header "$LABEL"
+
+        (( CURRENT < OFFSET )) && OFFSET=$CURRENT
+        (( CURRENT >= OFFSET + VISIBLE )) && OFFSET=$((CURRENT - VISIBLE + 1))
+        local END=$((OFFSET + VISIBLE))
+        (( END > ${#OPTIONS[@]} )) && END=${#OPTIONS[@]}
+
+        local INDEX
+        for ((INDEX=OFFSET; INDEX<END; INDEX++)); do
+            local DISPLAY_VALUE="${OPTIONS[$INDEX]}"
+            (( ${#DISPLAY_VALUE} > SCREEN_INNER - 6 )) && DISPLAY_VALUE="${DISPLAY_VALUE:0:SCREEN_INNER-9}..."
+            if (( INDEX == CURRENT )); then
+                printf '\033[48;5;99m\033[97m│%-*s│\033[0m\n' \
+                    "$SCREEN_INNER" "  > $DISPLAY_VALUE" >&2
+            else
+                frame_row "    $DISPLAY_VALUE"
+            fi
+        done
+        for ((INDEX=END; INDEX<OFFSET+VISIBLE; INDEX++)); do
+            frame_row ""
+        done
+        frame_footer "$((CURRENT + 1))/${#OPTIONS[@]}   ↑/↓ navigate   Enter select   q exit"
+
+        IFS= read -r -s -n 1 -u 3 KEY < /dev/tty
+        # Bash may return an empty variable for Enter when read is operating
+        # in non-canonical mode. Treat that the same as a newline.
+        if [[ -z "$KEY" ]]; then
+            stty "$OLD_STTY" < /dev/tty
+            printf '%s' "$((CURRENT + 1))"
+            return 0
+        fi
+        case "$KEY" in
+            $'\x1b')
+                IFS= read -r -s -n 2 -u 3 -t 0.1 KEY2 < /dev/tty || true
+                case "${KEY}${KEY2}" in
+                    $'\x1b[A') (( CURRENT > 0 )) && CURRENT=$((CURRENT - 1)) ;;
+                    $'\x1b[B') (( CURRENT < ${#OPTIONS[@]} - 1 )) && CURRENT=$((CURRENT + 1)) ;;
+                esac
+                ;;
+            $'\n'|$'\r')
+                stty "$OLD_STTY" < /dev/tty
+                printf '%s' "$((CURRENT + 1))"
+                return 0
+                ;;
+            q|Q)
+                stty "$OLD_STTY" < /dev/tty
+                return 1
+                ;;
+        esac
+    done
+}
+
+frame_choice_row() {
+    local CURRENT="$1"
+    shift
+    local OPTIONS=("$@")
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+    local USED=2
+    local INDEX VALUE
+
+    printf '%b│%b  ' "$PURPLE" "$RESET" >&2
+    for ((INDEX=0; INDEX<${#OPTIONS[@]}; INDEX++)); do
+        VALUE="${OPTIONS[$INDEX]}"
+        if (( INDEX == CURRENT )); then
+            printf '\033[48;5;99m\033[97m[%s]\033[0m' "$VALUE" >&2
+        else
+            printf ' %s ' "$VALUE" >&2
+        fi
+        USED=$((USED + ${#VALUE} + 2))
+        if (( INDEX < ${#OPTIONS[@]} - 1 )); then
+            printf '  ' >&2
+            USED=$((USED + 2))
+        fi
+    done
+
+    local PADDING=$((SCREEN_INNER - USED))
+    (( PADDING < 0 )) && PADDING=0
+    printf '%*s%b│%b\n' "$PADDING" '' "$PURPLE" "$RESET" >&2
+}
+
+modern_compact_select() {
+    local LABEL="$1"
+    local INITIAL_INDEX="$2"
+    shift 2
+    local OPTIONS=("$@")
+    local CURRENT="${INITIAL_INDEX:-0}" KEY KEY2 OLD_STTY
+
+    [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
+    [[ "$CURRENT" =~ ^[0-9]+$ && "$CURRENT" -lt "${#OPTIONS[@]}" ]] || CURRENT=0
+    [[ -c /dev/tty ]] || return 1
+
+    OLD_STTY=$(stty -g < /dev/tty) || return 1
+    stty -echo -icanon min 1 time 0 < /dev/tty || return 1
+    frame_setup
+
+    while true; do
+        frame_header "$LABEL"
+        frame_choice_row "$CURRENT" "${OPTIONS[@]}"
+
+        local CONTENT_ROWS=$((SCREEN_ROWS - 8))
+        local INDEX
+        for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+            frame_row ""
+        done
+        frame_footer "$((CURRENT + 1))/${#OPTIONS[@]}   ←/→ choose   Enter select   q exit"
+
+        IFS= read -r -s -n 1 -u 3 KEY < /dev/tty
+        if [[ -z "$KEY" ]]; then
+            stty "$OLD_STTY" < /dev/tty
+            printf '%s' "$((CURRENT + 1))"
+            return 0
+        fi
+        case "$KEY" in
+            $'\x1b')
+                IFS= read -r -s -n 2 -u 3 -t 0.1 KEY2 < /dev/tty || true
+                case "${KEY}${KEY2}" in
+                    $'\x1b[D'|$'\x1b[A') (( CURRENT > 0 )) && CURRENT=$((CURRENT - 1)) ;;
+                    $'\x1b[C'|$'\x1b[B') (( CURRENT < ${#OPTIONS[@]} - 1 )) && CURRENT=$((CURRENT + 1)) ;;
+                esac
+                ;;
+            $'\n'|$'\r')
+                stty "$OLD_STTY" < /dev/tty
+                printf '%s' "$((CURRENT + 1))"
+                return 0
+                ;;
+            q|Q)
+                stty "$OLD_STTY" < /dev/tty
+                return 1
+                ;;
+        esac
+    done
+}
+
+select_option() {
+    local LABEL="$1"
+    shift
+    local OPTIONS=("$@")
+
+    if [[ ${#OPTIONS[@]} -eq 0 ]]; then
+        echo -e "${RED}ERROR: No options were returned for ${LABEL}.${NC}" >&2
+        return 1
+    fi
+
+    # The modern picker is dependency-free and works well over SSH.
+    exec 3<> /dev/tty
+    modern_select "$LABEL" "${OPTIONS[@]}"
+    local RESULT=$?
+    exec 3>&-
+    return "$RESULT"
+}
+
+select_compact_option() {
+    local LABEL="$1"
+    local INITIAL_INDEX="$2"
+    shift 2
+    local OPTIONS=("$@")
+
+    [[ ${#OPTIONS[@]} -gt 0 ]] || return 1
+    exec 3<> /dev/tty
+    modern_compact_select "$LABEL" "$INITIAL_INDEX" "${OPTIONS[@]}"
+    local RESULT=$?
+    exec 3>&-
+    return "$RESULT"
+}
+
+show_message() {
+    local MESSAGE="$1"
+    if [[ -c /dev/tty ]]; then
+        frame_setup
+        frame_header "Message"
+        local MESSAGE_LINES=0
+        local MESSAGE_LINE
+        while IFS= read -r MESSAGE_LINE; do
+            frame_row "  $MESSAGE_LINE"
+            MESSAGE_LINES=$((MESSAGE_LINES + 1))
+        done <<< "$(printf '%b' "$MESSAGE")"
+        local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+        local INDEX
+        for ((INDEX=MESSAGE_LINES; INDEX<CONTENT_ROWS; INDEX++)); do
+            frame_row ""
+        done
+        frame_footer "Enter continue   Ctrl-C exit"
+        IFS= read -r _ < /dev/tty
+    else
+        echo -e "${MESSAGE}"
+        read -r -p "Press Enter to continue..." _
+    fi
+}
+
+status_render() {
+    local CONTROLS="${1:-Please wait...   Ctrl-C exit}"
+    frame_setup
+    if [[ "${STATUS_SCREEN_INITIALIZED:-0}" != 1 ||
+          "${STATUS_SCREEN_COLS:-}" != "$SCREEN_COLS" ||
+          "${STATUS_SCREEN_ROWS:-}" != "$SCREEN_ROWS" ]]; then
+        frame_header "${TUI_STATUS_TITLE:-NKP startup}"
+        STATUS_SCREEN_INITIALIZED=1
+        STATUS_SCREEN_COLS="$SCREEN_COLS"
+        STATUS_SCREEN_ROWS="$SCREEN_ROWS"
+    else
+        printf '\033[5;1H' >&2
+    fi
+
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local START=0
+    local TOTAL=${#TUI_STATUS_LINES[@]}
+    (( TOTAL > CONTENT_ROWS )) && START=$((TOTAL - CONTENT_ROWS))
+
+    local INDEX COLOR MESSAGE
+    for ((INDEX=START; INDEX<TOTAL; INDEX++)); do
+        COLOR="${TUI_STATUS_COLORS[$INDEX]}"
+        MESSAGE="${TUI_STATUS_LINES[$INDEX]}"
+        frame_row_color "$COLOR" "  $MESSAGE"
+    done
+    for ((INDEX=TOTAL-START; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "$CONTROLS"
+}
+
+status_begin() {
+    TUI_STATUS_TITLE="$1"
+    TUI_STATUS_LINES=()
+    TUI_STATUS_COLORS=()
+    STATUS_SCREEN_INITIALIZED=0
+    status_render
+}
+
+status_add() {
+    local COLOR="$1"
+    shift
+    TUI_STATUS_COLORS+=("$COLOR")
+    TUI_STATUS_LINES+=("$*")
+    status_render
+}
+
+status_pause() {
+    status_render "Enter continue   Ctrl-C exit"
+    IFS= read -r _ < /dev/tty
+}
+
+load_deployment_output() {
+    local LOG_FILE="$1"
+    DEPLOY_LOG_LINES=()
+    while IFS= read -r DEPLOY_LINE || [[ -n "$DEPLOY_LINE" ]]; do
+        [[ -n "$DEPLOY_LINE" ]] && DEPLOY_LOG_LINES+=("$DEPLOY_LINE")
+    done < <(
+        sed -E \
+            -e 's/\x1B\][^\x07]*\x07//g' \
+            -e 's/\x1B\[[0-9;:<>?]*[ -/]*[@-~]//g' \
+            -e 's/\x1B[0-9A-Za-z]//g' \
+        "$LOG_FILE" | tr '\r' '\n' | tr -d '\000-\010\013\014\016-\037\177'
+    )
+}
+
+deployment_log_signature() {
+    local LOG_FILE="$1"
+    if [[ -f "$LOG_FILE" ]]; then
+        stat -c '%s:%Y' "$LOG_FILE" 2>/dev/null || wc -c < "$LOG_FILE"
+    else
+        printf '0:0'
+    fi
+}
+
+deployment_scroll_up() {
+    local CONTENT_ROWS="$1"
+    local STEP="${2:-1}"
+    local MAX_START=$((${#DEPLOY_LOG_LINES[@]} - CONTENT_ROWS))
+    (( MAX_START < 0 )) && MAX_START=0
+    if [[ "${DEPLOY_SCROLL_FOLLOW:-1}" == 1 ]]; then
+        DEPLOY_SCROLL_OFFSET=$MAX_START
+        DEPLOY_SCROLL_FOLLOW=0
+    fi
+    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET - STEP))
+    (( DEPLOY_SCROLL_OFFSET < 0 )) && DEPLOY_SCROLL_OFFSET=0
+}
+
+deployment_scroll_down() {
+    local CONTENT_ROWS="$1"
+    local STEP="${2:-1}"
+    local MAX_START=$((${#DEPLOY_LOG_LINES[@]} - CONTENT_ROWS))
+    (( MAX_START < 0 )) && MAX_START=0
+    [[ "${DEPLOY_SCROLL_FOLLOW:-1}" == 1 ]] && return 0
+    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET + STEP))
+    if (( DEPLOY_SCROLL_OFFSET >= MAX_START )); then
+        DEPLOY_SCROLL_FOLLOW=1
+        DEPLOY_SCROLL_OFFSET=0
+    fi
+}
+
+deployment_handle_mouse_button() {
+    local BUTTON="$1"
+    local CONTENT_ROWS="$2"
+    [[ "$BUTTON" =~ ^[0-9]+$ ]] || return 0
+    (( BUTTON >= 64 )) || return 0
+
+    # Wheel up/down are 64/65. The modulo also accepts modifier bits without
+    # treating horizontal wheel events as vertical scrolling.
+    case $(((BUTTON - 64) % 4)) in
+        0) deployment_scroll_up "$CONTENT_ROWS" 3 ;;
+        1)
+            # While NKP is live, returning to the live tail is more useful
+            # than chasing a moving end of file.  Once complete, wheel-down
+            # remains an ordinary incremental scroll operation.
+            if [[ "${DEPLOY_LIVE:-0}" == 1 && "${DEPLOY_SCROLL_FOLLOW:-1}" != 1 ]]; then
+                DEPLOY_SCROLL_FOLLOW=1
+                DEPLOY_SCROLL_OFFSET=0
+            else
+                deployment_scroll_down "$CONTENT_ROWS" 3
+            fi
+            ;;
+    esac
+}
+
+deployment_handle_key() {
+    local KEY="$1"
+    local CONTENT_ROWS="$2"
+    local TOTAL=${#DEPLOY_LOG_LINES[@]}
+    local MAX_START=$((TOTAL - CONTENT_ROWS))
+    local KEY2 KEY3 KEY4 MOUSE_DATA MOUSE_CHAR BUTTON READ_TIMEOUT
+    local MOUSE_BUTTON MOUSE_X MOUSE_Y BUTTON_CODE
+    READ_TIMEOUT=0.5
+    (( MAX_START < 0 )) && MAX_START=0
+
+    # Bash may report Enter as an empty variable when read is operating in
+    # non-canonical mode.  A timed read is filtered by the callers, so an
+    # empty key reaching this handler is an actual Enter press.
+    [[ -z "$KEY" ]] && KEY=$'\n'
+    case "$KEY" in
+        $'\x1b')
+            # SGR mouse wheel events arrive as ESC [ < button ; x ; y M.
+            # Read the introducer separately so normal cursor keys continue
+            # to work while the mouse sequence can be consumed completely.
+            IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY2 || true
+            if [[ "$KEY2" == "[" ]]; then
+                IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY3 || true
+                if [[ "$KEY3" == "<" ]]; then
+                    MOUSE_DATA=""
+                    while IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_CHAR; do
+                        [[ "$MOUSE_CHAR" == "M" || "$MOUSE_CHAR" == "m" ]] && break
+                        MOUSE_DATA+="$MOUSE_CHAR"
+                    done
+                    BUTTON="${MOUSE_DATA%%;*}"
+                    deployment_handle_mouse_button "$BUTTON" "$CONTENT_ROWS"
+                    return 0
+                elif [[ "$KEY3" == "M" ]]; then
+                    # Older terminals and some tmux/SSH combinations use the
+                    # X10 format: ESC [ M button x y. Wheel values are sent
+                    # as ASCII 32 + 64/65.
+                    IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_BUTTON || true
+                    IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_X || true
+                    IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_Y || true
+                    if [[ -n "$MOUSE_BUTTON" ]]; then
+                        LC_ALL=C printf -v BUTTON_CODE '%d' "'$MOUSE_BUTTON"
+                        if [[ "$BUTTON_CODE" =~ ^[0-9]+$ ]]; then
+                            BUTTON=$((BUTTON_CODE - 32))
+                            deployment_handle_mouse_button "$BUTTON" "$CONTENT_ROWS"
+                        fi
+                    fi
+                    return 0
+                fi
+                KEY2="${KEY2}${KEY3}"
+                # Simple arrows and Home/End terminate at KEY3.  Only
+                # numeric CSI sequences (PageUp/PageDown and tilde forms)
+                # need additional bytes; do not consume the next key while
+                # waiting for an optional fourth byte.
+                if [[ "$KEY3" =~ [0-9] ]]; then
+                    while IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY4; do
+                        KEY2="${KEY2}${KEY4}"
+                        [[ "$KEY4" =~ [@-~] ]] && break
+                    done
+                fi
+            elif [[ "$KEY2" == "O" ]]; then
+                # Application-cursor mode uses SS3 sequences (ESC O A/B)
+                # instead of CSI sequences (ESC [ A/B).
+                IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY3 || true
+                KEY2="${KEY2}${KEY3}"
+            fi
+            case "${KEY}${KEY2}" in
+                $'\x1b[A'|$'\x1bOA'|$'\x1b[H'|$'\x1bOH'|$'\x1b[1~')
+                    deployment_scroll_up "$CONTENT_ROWS" 1
+                    ;;
+                $'\x1b[B'|$'\x1bOB')
+                    deployment_scroll_down "$CONTENT_ROWS" 1
+                    ;;
+                $'\x1b[5~')
+                    if [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]]; then
+                        DEPLOY_SCROLL_OFFSET=$MAX_START
+                        DEPLOY_SCROLL_FOLLOW=0
+                    fi
+                    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET - CONTENT_ROWS))
+                    (( DEPLOY_SCROLL_OFFSET < 0 )) && DEPLOY_SCROLL_OFFSET=0
+                    ;;
+                $'\x1b[6~')
+                    [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]] && return 0
+                    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET + CONTENT_ROWS))
+                    if (( DEPLOY_SCROLL_OFFSET >= MAX_START )); then
+                        DEPLOY_SCROLL_FOLLOW=1
+                        DEPLOY_SCROLL_OFFSET=0
+                    fi
+                    ;;
+                $'\x1b[F'|$'\x1bOF'|$'\x1b[4~')
+                    DEPLOY_SCROLL_FOLLOW=1
+                    DEPLOY_SCROLL_OFFSET=0
+                    ;;
+            esac
+            ;;
+        $'\n'|$'\r')
+            DEPLOY_REVIEW_DONE=1
+            ;;
+        $'\x03')
+            DEPLOY_CANCELLED=1
+            DEPLOY_REVIEW_DONE=1
+            ;;
+    esac
+}
+
+render_deployment_output() {
+    local TITLE="$1"
+    local LOG_FILE="$2"
+    local FOOTER="$3"
+    local CONTENT_ROWS
+    local LINE COLOR
+    local START END TOTAL INDEX ROW
+    local BUFFER=""
+    local CLEAR_SCREEN=""
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
+
+    frame_setup
+    if [[ "${DEPLOYMENT_SCREEN_INITIALIZED:-0}" != 1 ||
+          "${DEPLOYMENT_SCREEN_COLS:-}" != "$SCREEN_COLS" ||
+          "${DEPLOYMENT_SCREEN_ROWS:-}" != "$SCREEN_ROWS" ]]; then
+        CLEAR_SCREEN=$'\033[3J\033[2J'
+        DEPLOYMENT_SCREEN_INITIALIZED=1
+        DEPLOYMENT_SCREEN_COLS="$SCREEN_COLS"
+        DEPLOYMENT_SCREEN_ROWS="$SCREEN_ROWS"
+    fi
+
+    # Build the entire deployment frame before writing it.  Every row is
+    # addressed absolutely and no row emits a newline, so NKP output cannot
+    # move the terminal cursor past the frame or scroll the real terminal.
+    BUFFER+="$CLEAR_SCREEN"$'\033[?7l\033[?25l'
+    printf -v LINE '%b╭%s╮%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033[1;1H\033[2K'"$LINE"
+    printf -v LINE '%b│%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "  NKP DEPLOYMENT" "$SCREEN_COLS" "$PURPLE" "$RESET"
+    BUFFER+=$'\033[2;1H\033[2K'"$LINE"
+    printf -v LINE '%b│%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "  $TITLE" "$SCREEN_COLS" "$PURPLE" "$RESET"
+    BUFFER+=$'\033[3;1H\033[2K'"$LINE"
+    printf -v LINE '%b├%s┤%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033[4;1H\033[2K'"$LINE"
+
+    CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    load_deployment_output "$LOG_FILE"
+    TOTAL=${#DEPLOY_LOG_LINES[@]}
+
+    if [[ "${DEPLOY_SCROLL_FOLLOW:-1}" == 1 ]]; then
+        START=$((TOTAL - CONTENT_ROWS))
+    else
+        START=${DEPLOY_SCROLL_OFFSET:-0}
+    fi
+    (( START < 0 )) && START=0
+    (( START > TOTAL )) && START=$TOTAL
+    END=$((START + CONTENT_ROWS))
+    (( END > TOTAL )) && END=$TOTAL
+
+    ROW=5
+    for ((INDEX=START; INDEX<END; INDEX++)); do
+        LINE="${DEPLOY_LOG_LINES[$INDEX]}"
+        case "${LINE,,}" in
+            *error*|*failed*|*fatal*) COLOR="$RED" ;;
+            *warn*) COLOR="$YELLOW" ;;
+            *complete*|*success*) COLOR="$GREEN" ;;
+            *) COLOR="$CYAN" ;;
+        esac
+        (( ${#LINE} > SCREEN_INNER - 2 )) && LINE="${LINE:0:SCREEN_INNER-5}..."
+        printf -v LINE '%b│%b%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "$COLOR" "  $LINE" "$SCREEN_COLS" "$PURPLE" "$RESET"
+        BUFFER+=$'\033['"${ROW}"$';1H\033[2K'"$LINE"
+        ROW=$((ROW + 1))
+    done
+    for ((INDEX=END-START; INDEX<CONTENT_ROWS; INDEX++)); do
+        printf -v LINE '%b│%b\033[%dG%b│%b' "$PURPLE" "$RESET" "$SCREEN_COLS" "$PURPLE" "$RESET"
+        BUFFER+=$'\033['"${ROW}"$';1H\033[2K'"$LINE"
+        ROW=$((ROW + 1))
+    done
+
+    printf -v LINE '%b├%s┤%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033['"$((SCREEN_ROWS - 2))"$';1H\033[2K'"$LINE"
+    printf -v LINE '%b│%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "  Controls: $FOOTER" "$SCREEN_COLS" "$PURPLE" "$RESET"
+    BUFFER+=$'\033['"$((SCREEN_ROWS - 1))"$';1H\033[2K'"$LINE"
+    printf -v LINE '%b╰%s╯%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033['"$SCREEN_ROWS"$';1H\033[2K'"$LINE"$'\033[1;1H'
+    printf '%s' "$BUFFER" >&2
+}
+
+deployment_review() {
+    local LOG_FILE="$1"
+    local TITLE="$2"
+    local CONTENT_ROWS KEY
+    DEPLOY_REVIEW_DONE=0
+    DEPLOY_SCROLL_OFFSET=0
+    DEPLOY_SCROLL_FOLLOW=1
+    DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || return 1
+    stty -echo -icanon min 1 time 0 < /dev/tty || return 1
+    exec 3<>/dev/tty
+    tui_enable_mouse
+    while [[ "$DEPLOY_REVIEW_DONE" != 1 ]]; do
+        frame_setup
+        CONTENT_ROWS=$((SCREEN_ROWS - 7))
+        render_deployment_output "$TITLE" "$LOG_FILE" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End   Enter continue"
+        IFS= read -r -s -n 1 -u 3 KEY
+        deployment_handle_key "$KEY" "$CONTENT_ROWS"
+    done
+    tui_disable_mouse
+    stty "$DEPLOY_TTY_STATE" < /dev/tty
+    exec 3>&-
+}
+
+deployment_process_running() {
+    local PID="$1"
+    local STATE
+    kill -0 "$PID" 2>/dev/null || return 1
+    STATE=$(ps -o stat= -p "$PID" 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$STATE" && "$STATE" != Z* ]]
+}
+
+capture_dashboard_success() {
+    local INDEX NEXT
+    DEPLOY_DASHBOARD_DETAILS=""
+    for ((INDEX=0; INDEX<${#DEPLOY_LOG_LINES[@]}; INDEX++)); do
+        if [[ "${DEPLOY_LOG_LINES[$INDEX]}" == *"Cluster was created successfully"* ]]; then
+            DEPLOY_DASHBOARD_DETAILS="${DEPLOY_LOG_LINES[$INDEX]}"
+            for ((NEXT=INDEX+1; NEXT<${#DEPLOY_LOG_LINES[@]} && NEXT<=INDEX+2; NEXT++)); do
+                DEPLOY_DASHBOARD_DETAILS+=$'\n'"${DEPLOY_LOG_LINES[$NEXT]}"
+            done
+            break
+        fi
+    done
+}
+
+# ============================================================
+# DEPENDENCY CHECK
+# ============================================================
+status_begin "Checking local prerequisites"
+status_add "$CYAN" "Verifying required dependencies..."
+REQUIRED_COMMANDS=("curl" "jq" "tar" "tmux")
+MISSING_COMMANDS=()
+for cmd in "${REQUIRED_COMMANDS[@]}"; do
+    if command -v "$cmd" &> /dev/null; then
+        status_add "$GREEN" "${cmd} is available."
+    else
+        MISSING_COMMANDS+=("$cmd")
+        status_add "$RED" "${cmd} is not installed."
+    fi
+done
+if [[ ${#MISSING_COMMANDS[@]} -gt 0 ]]; then
+    status_add "$YELLOW" "Install missing tools with: sudo yum install -y ${MISSING_COMMANDS[*]}"
+    status_pause
+    exit 1
+fi
+status_add "$GREEN" "All required dependencies verified."
+
+# ============================================================
 # HELPER: subnet check
 # ============================================================
 is_in_same_subnet() {
     local ip1=$1
     local ip2=$2
-    # Masks to the first 3 octets (255.255.255.0)
-    # This is typical for NKP deployments; modify if your network uses different CIDR
-    [[ "${ip1%.*}" == "${ip2%.*}" ]]
+    local prefix="${3:-${SUBNET_PREFIX_LENGTH:-24}}"
+
+    if ! validate_ipv4 "$ip1" || ! validate_ipv4 "$ip2"; then
+        return 1
+    fi
+
+    local value1 value2 mask
+    value1=$(ip2int "$ip1")
+    value2=$(ip2int "$ip2")
+    if (( prefix == 0 )); then
+        mask=0
+    else
+        mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+    fi
+    (( (value1 & mask) == (value2 & mask) ))
+}
+
+validate_ipv4() {
+    local IP="$1"
+    local OCTET
+    local COUNT=0
+    IFS='.' read -r -a OCTETS <<< "$IP"
+    [[ ${#OCTETS[@]} -eq 4 ]] || return 1
+    for OCTET in "${OCTETS[@]}"; do
+        [[ "$OCTET" =~ ^[0-9]{1,3}$ ]] || return 1
+        (( 10#$OCTET <= 255 )) || return 1
+        COUNT=$((COUNT + 1))
+    done
+    (( COUNT == 4 ))
+}
+
+version_at_least() {
+    local ACTUAL REQUIRED LOWEST
+    ACTUAL=$(printf '%s' "$1" | sed -E 's/^[^0-9]*//')
+    REQUIRED=$(printf '%s' "$2" | sed -E 's/^[^0-9]*//')
+    [[ -n "$ACTUAL" && -n "$REQUIRED" ]] || return 1
+    LOWEST=$(printf '%s\n%s\n' "$ACTUAL" "$REQUIRED" | sort -V | head -n1)
+    [[ "$LOWEST" == "$REQUIRED" ]]
+}
+
+extract_kubernetes_version() {
+    local IMAGE_NAME="$1"
+    if [[ "$IMAGE_NAME" =~ (^|[-_.])v?1\.([0-9]+)\.[0-9]+([-_.]|$) ]]; then
+        printf '1.%s.x' "${BASH_REMATCH[2]}"
+        return 0
+    fi
+    return 1
+}
+
+validate_compatibility() {
+    local ENTRY="$1"
+    local SUPPORTED_K8S
+    SUPPORTED_K8S=$(echo "$ENTRY" | jq -r '.nkp_supported_version[]? // empty' 2>/dev/null | paste -sd ', ' -)
+
+    if [[ -z "${VM_IMAGE_K8S_VERSION:-}" ]]; then
+        show_message "Unable to determine the Kubernetes version from the selected VM image.\n\nKeep the original NKP Rocky image name; it must contain a version such as 1.34.3."
+        return 1
+    fi
+
+    if ! echo "$ENTRY" | jq -e --arg VERSION "$VM_IMAGE_K8S_VERSION" \
+        '.nkp_supported_version | index($VERSION) != null' >/dev/null 2>&1; then
+        show_message "The selected VM image is not compatible with NKP ${NKP_VERSION_KEY}.\n\nImage Kubernetes version: ${VM_IMAGE_K8S_VERSION}\nSupported versions: ${SUPPORTED_K8S:-none listed}\n\nSelect the Rocky image supplied for this NKP release."
+        return 1
+    fi
+
+    local AOS_COUNT PC_COUNT INDEX MIN_AOS MIN_PC COMPATIBLE=false COMPATIBILITY_ROWS=""
+    AOS_COUNT=$(echo "$ENTRY" | jq -r '.aos_min_version | length' 2>/dev/null)
+    PC_COUNT=$(echo "$ENTRY" | jq -r '.prism_central_min_version | length' 2>/dev/null)
+    if [[ ! "$AOS_COUNT" =~ ^[0-9]+$ || "$AOS_COUNT" -eq 0 || "$AOS_COUNT" -ne "$PC_COUNT" ]]; then
+        show_message "The compatibility entry for NKP ${NKP_VERSION_KEY} is invalid.\n\nAOS and Prism Central minimum-version lists must contain matching rows."
+        return 1
+    fi
+
+    for ((INDEX=0; INDEX<AOS_COUNT; INDEX++)); do
+        MIN_AOS=$(echo "$ENTRY" | jq -r --argjson INDEX "$INDEX" '.aos_min_version[$INDEX]')
+        MIN_PC=$(echo "$ENTRY" | jq -r --argjson INDEX "$INDEX" '.prism_central_min_version[$INDEX]')
+        COMPATIBILITY_ROWS+="\n  Prism Central >= ${MIN_PC} and AOS >= ${MIN_AOS}"
+        if version_at_least "$AOS_VERSION" "$MIN_AOS" && version_at_least "$PC_RAW" "$MIN_PC"; then
+            COMPATIBLE=true
+        fi
+    done
+
+    if [[ "$COMPATIBLE" != true ]]; then
+        show_message "The selected environment is not compatible with NKP ${NKP_VERSION_KEY}.\n\nDetected Prism Central: ${PC_RAW}\nDetected AOS: ${AOS_VERSION}\nSelected Kubernetes image: ${VM_IMAGE_K8S_VERSION}\n\nAccepted platform combinations:${COMPATIBILITY_ROWS}"
+        return 1
+    fi
+    return 0
 }
 
 # ============================================================
-# HELPER: version comparison
-# ============================================================
-version_gt() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
-
-# ============================================================
-# HELPER: ip2int (kept for potential future use)
+# HELPER: IPv4 address conversion
 # ============================================================
 ip2int() {
     local a b c d
     IFS=. read -r a b c d <<< "$1"
-    echo "$(( (a << 24) + (b << 16) + (c << 8) + d ))"
+    echo "$(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))"
 }
 
-# ============================================================
-# HELPER: Validate VM image against PC — called from summary loop
-# Sets VM_IMAGE_VALID=true/false
-# ============================================================
-validate_vm_image() {
-    local IMAGE_NAME="$1"
-    local RESULTS
-    RESULTS=$(call_curl_v4 "GET" "/vmm/v4.0/content/images?\$filter=contains(name,'${IMAGE_NAME}')")
-    local EXACT_MATCH
-    EXACT_MATCH=$(echo "$RESULTS" | jq -r --arg NAME "$IMAGE_NAME" '.data[]? | select(.name == $NAME) | .name' 2>/dev/null)
+# Return the fixed network portion of an address. The editable portion is
+# entered separately so users cannot accidentally change the network prefix.
+network_input_prefix() {
+    local IP="$1"
+    local PREFIX="$2"
+    local A B C D FULL_OCTETS
+    IFS=. read -r A B C D <<< "$IP"
+    FULL_OCTETS=$((PREFIX / 8))
+    case "$FULL_OCTETS" in
+        0) echo "" ;;
+        1) echo "${A}." ;;
+        2) echo "${A}.${B}." ;;
+        3) echo "${A}.${B}.${C}." ;;
+        *) echo "${A}.${B}.${C}.${D}" ;;
+    esac
+}
 
-    if [[ -n "$EXACT_MATCH" ]]; then
-        VM_IMAGE_VALID=true
-        return
-    fi
+host_octet_count() {
+    local PREFIX="$1"
+    local COUNT=$((4 - PREFIX / 8))
+    (( COUNT < 1 )) && COUNT=1
+    echo "$COUNT"
+}
 
-    VM_IMAGE_VALID=false
-    local FUZZY_LIST
-    FUZZY_LIST=$(echo "$RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
-
-    echo ""
-    echo -e "${RED}  Image '${IMAGE_NAME}' not found on Prism Central.${NC}"
-
-    if [[ -n "$FUZZY_LIST" ]]; then
-        echo -e "${YELLOW}  Similar images found:${NC}"
-        while IFS= read -r IMG; do
-            echo -e "    ${CYAN}${IMG}${NC}"
-        done <<< "$FUZZY_LIST"
+suffix_from_ip() {
+    local IP="$1"
+    local PREFIX="$2"
+    local FIXED_PREFIX
+    FIXED_PREFIX=$(network_input_prefix "$SUBNET_NETWORK_IP" "$PREFIX")
+    if [[ "$IP" == "$FIXED_PREFIX"* ]]; then
+        echo "${IP#"$FIXED_PREFIX"}"
     else
-        echo -e "${YELLOW}  No similar images found. Fetching full image list...${NC}"
-        local ALL_RESULTS
-        ALL_RESULTS=$(call_curl_v4 "GET" "/vmm/v4.0/content/images")
-        local ALL_IMAGES
-        ALL_IMAGES=$(echo "$ALL_RESULTS" | jq -r '.data[]?.name' 2>/dev/null)
-        if [[ -n "$ALL_IMAGES" ]]; then
-            while IFS= read -r IMG; do
-                echo -e "    ${CYAN}${IMG}${NC}"
-            done <<< "$ALL_IMAGES"
-        else
-            echo -e "${RED}  Could not retrieve image list from Prism Central.${NC}"
-        fi
+        echo ""
     fi
-    echo ""
+}
+
+int2ip() {
+    local VALUE="$1"
+    echo "$(( (VALUE >> 24) & 255 )).$(( (VALUE >> 16) & 255 )).$(( (VALUE >> 8) & 255 )).$(( VALUE & 255 ))"
+}
+
+modern_host_prompt() {
+    local LABEL="$1"
+    local FIXED_PREFIX="$2"
+    local DEFAULT_SUFFIX="$3"
+    local HOST_OCTETS="$4"
+    local VALUE="" OCTET_WORD="octet"
+    (( HOST_OCTETS != 1 )) && OCTET_WORD="octets"
+
+    frame_setup
+    frame_prompt_header
+    local INPUT_TEXT="  ${LABEL}: ${FIXED_PREFIX}"
+    local INPUT_COLUMN=$((2 + ${#INPUT_TEXT}))
+    frame_row "$INPUT_TEXT"
+    # Save the cursor on the actual input row instead of relying on a
+    # terminal-specific absolute row calculation.
+    printf '\033[1A\033[%dG\033[s' "$INPUT_COLUMN" >&2
+    printf '\033[1B\033[1G' >&2
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local INDEX
+    for ((INDEX=0; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Type ${HOST_OCTETS} host ${OCTET_WORD}   Enter submit   Ctrl-C exit"
+    printf '\033[u' >&2
+    IFS= read -r VALUE < /dev/tty
+    [[ -z "$VALUE" && -n "$DEFAULT_SUFFIX" ]] && VALUE="$DEFAULT_SUFFIX"
+    printf '%s' "$VALUE"
+}
+
+prompt_host_suffix() {
+    local LABEL="$1"
+    local DEFAULT_SUFFIX="$2"
+    REPLY=$(modern_host_prompt "$LABEL" "$SUBNET_INPUT_PREFIX" "$DEFAULT_SUFFIX" "$SUBNET_HOST_OCTETS") || exit 0
+}
+
+api_failed() {
+    local BODY="$1"
+    local STATUS
+    STATUS=$(echo "$BODY" | jq -r '.httpStatus // empty' 2>/dev/null)
+    [[ -n "$STATUS" && "$STATUS" != "null" ]]
+}
+
+api_error_message() {
+    local BODY="$1"
+    local STATUS API_PATH DETAIL
+    STATUS=$(echo "$BODY" | jq -r '.httpStatus // "unknown"' 2>/dev/null)
+    API_PATH=$(echo "$BODY" | jq -r '.apiPath // empty' 2>/dev/null)
+    DETAIL=$(echo "$BODY" | jq -r '
+        (.message // .error // .response // (.metadata.messages[0].message // empty))
+        | if type == "string" then . else tostring end
+    ' 2>/dev/null | tr '\n' ' ' | cut -c1-360)
+    [[ -z "$DETAIL" ]] && DETAIL="No response body was returned."
+    printf 'Prism Central API request failed (HTTP %s).\n\nEndpoint: %s\n\n%s' "$STATUS" "${API_PATH:-unknown}" "$DETAIL"
+}
+
+summary_row() {
+    local LABEL="$1"
+    local VALUE="$2"
+    local PURPLE='\033[38;5;141m'
+    local DIM='\033[38;5;245m'
+    local RESET='\033[0m'
+    local LABEL_WIDTH="${SUMMARY_LABEL_WIDTH:-26}"
+    local VALUE_WIDTH="${SUMMARY_VALUE_WIDTH:-41}"
+    VALUE="${VALUE//$'\n'/ }"
+    (( ${#VALUE} > VALUE_WIDTH )) && VALUE="${VALUE:0:VALUE_WIDTH-3}..."
+    printf '%b│%b %b%-*s%b │ %-*s %b│%b\n' \
+        "$PURPLE" "$RESET" "$DIM" "$LABEL_WIDTH" "$LABEL" "$RESET" "$VALUE_WIDTH" "$VALUE" "$PURPLE" "$RESET"
+}
+
+render_final_summary() {
+    frame_setup
+    SUMMARY_LABEL_WIDTH=26
+    SUMMARY_VALUE_WIDTH=$((SCREEN_INNER - SUMMARY_LABEL_WIDTH - 5))
+    frame_header "Final deployment summary"
+    summary_row "NKP Version" "$VERSION_WITH_V"
+    summary_row "Prism Central" "$PC_ENDPOINT"
+    summary_row "Prism Central Version" "$PC_RAW"
+    summary_row "AOS Version" "$AOS_VERSION"
+    summary_row "Cluster Name" "$CLUSTER_NAME"
+    summary_row "AHV Cluster" "$AHV_CLUSTER"
+    summary_row "AHV Network" "$NETWORK"
+    summary_row "Network CIDR" "$SUBNET_CIDR"
+    summary_row "Control Plane VIP" "$VIP"
+    summary_row "Load Balancer Range" "$LB_RANGE"
+    summary_row "VM Image" "$VM_IMAGE"
+    summary_row "Kubernetes Image Version" "$VM_IMAGE_K8S_VERSION"
+    summary_row "Storage Container" "$STORAGE"
+    summary_row "Control Plane Nodes" "$CP_REPLICAS"
+    summary_row "Worker Nodes" "$WORKER_REPLICAS"
+    summary_row "Kubeconfig" "$KUBECONFIG"
+    local SUMMARY_ROWS=16
+    local CONTENT_ROWS=$((SCREEN_ROWS - 7))
+    local PROMPT_TEXT="  Proceed with deployment? [Y/N]: "
+    local PROMPT_COLUMN=$((2 + ${#PROMPT_TEXT}))
+    frame_row "$PROMPT_TEXT"
+    # Save the cursor directly on the visible approval prompt, then finish
+    # drawing the frame and restore it before reading the answer.
+    printf '\033[1A\033[%dG\033[s' "$PROMPT_COLUMN" >&2
+    printf '\033[1B\033[1G' >&2
+    local INDEX
+    for ((INDEX=SUMMARY_ROWS + 1; INDEX<CONTENT_ROWS; INDEX++)); do
+        frame_row ""
+    done
+    frame_footer "Type Y or N, then Enter   Ctrl-C exit"
+    printf '\033[u' >&2
+}
+
+final_summary_confirmation() {
+    local CONFIRM=""
+    while true; do
+        IFS= read -r CONFIRM < /dev/tty
+        # Ignore an Enter/newline left behind by the preceding selector. The
+        # deployment review must require an explicit Y or N.
+        [[ -z "$CONFIRM" ]] && continue
+        [[ "$CONFIRM" =~ ^[Nn]$ ]] && return 1
+        [[ "$CONFIRM" =~ ^[Yy]$ ]] && return 0
+    done
 }
 
 # ============================================================
 # PREFLIGHT 1: CONTAINER RUNTIME & CGROUP DELEGATION
 # ============================================================
-echo -e "${CYAN}Performing Pre-flight checks...${NC}"
-echo -e "${CYAN}Checking container runtime and cgroup configuration...${NC}"
+status_begin "Preflight checks"
+status_add "$CYAN" "Checking container runtime and cgroup configuration..."
 
 CONTAINER_RUNTIME="unknown"
 if command -v podman &> /dev/null; then
     CONTAINER_RUNTIME="podman"
-    echo -e "${GREEN}--> Podman detected.${NC}"
+    status_add "$GREEN" "Podman detected."
 elif command -v docker &> /dev/null; then
     CONTAINER_RUNTIME="docker"
-    echo -e "${GREEN}--> Docker detected (no cgroup delegation needed for Docker daemon).${NC}"
+    status_add "$GREEN" "Docker detected; cgroup delegation is not required."
 else
-    echo -e "${YELLOW}WARNING: No container runtime (podman or docker) detected.${NC}"
-    echo -e "${YELLOW}NKP requires podman or docker to be installed.${NC}"
+    status_add "$YELLOW" "Warning: no podman or docker runtime detected."
+    status_add "$YELLOW" "NKP requires podman or docker to be installed."
 fi
 
 # Cgroup delegation is only needed for podman
@@ -258,57 +1293,53 @@ if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
     GLOBAL_DELEGATE_CONF="$GLOBAL_DELEGATE_DIR/delegate.conf"
 
     if [[ ! -f "$GLOBAL_DELEGATE_CONF" ]]; then
-        echo -e "${YELLOW}--> Podman detected: cgroup v2 delegation missing. Applying fix...${NC}"
-        sudo mkdir -p "$GLOBAL_DELEGATE_DIR"
-        echo -e "[Service]\nDelegate=yes" | sudo tee "$GLOBAL_DELEGATE_CONF" > /dev/null
-        sudo systemctl daemon-reload
-        echo -e "${RED}=======================================================${NC}"
-        echo -e "${RED}SYSTEM CHANGE APPLIED: REBOOT REQUIRED${NC}"
-        echo -e "${YELLOW}The kernel requires a reboot to delegate cgroup control.${NC}"
-        echo -e "Please run: ${CYAN}sudo reboot${NC}"
-        echo -e "${RED}=======================================================${NC}"
+        status_add "$YELLOW" "Podman cgroup v2 delegation is missing; applying the fix..."
+        sudo mkdir -p "$GLOBAL_DELEGATE_DIR" >/dev/null 2>&1
+        printf '[Service]\nDelegate=yes\n' | sudo tee "$GLOBAL_DELEGATE_CONF" >/dev/null
+        sudo systemctl daemon-reload >/dev/null 2>&1
+        status_add "$RED" "System change applied: reboot required."
+        status_add "$YELLOW" "Run: sudo reboot"
+        status_pause
         exit 1
     fi
 
     if ! systemctl show "user@$(id -u).service" --property=Delegate | grep -q "Delegate=yes"; then
-        echo -e "${RED}=======================================================${NC}"
-        echo -e "${RED}ERROR: Cgroup delegation is configured but NOT ACTIVE.${NC}"
-        echo -e "${YELLOW}A reboot is required to activate these kernel permissions.${NC}"
-        echo -e "Please run: ${CYAN}sudo reboot${NC}"
-        echo -e "${RED}=======================================================${NC}"
+        status_add "$RED" "Error: cgroup delegation is configured but not active."
+        status_add "$YELLOW" "A reboot is required; run: sudo reboot"
+        status_pause
         exit 1
     fi
-    echo -e "${GREEN}--> Podman cgroup delegation verified and ACTIVE.${NC}"
+    status_add "$GREEN" "Podman cgroup delegation verified and active."
 elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
-    echo -e "${GREEN}--> Docker daemon detected (cgroup delegation not required).${NC}"
+    status_add "$GREEN" "Docker daemon is ready."
 fi
 
 # ============================================================
 # PREFLIGHT 2: NETWORK CONNECTIVITY CHECK
 # ============================================================
-echo -e "${YELLOW}Checking outbound connectivity to Nutanix portal...${NC}"
+status_add "$YELLOW" "Checking outbound connectivity to Nutanix portal..."
 if ! curl -s --connect-timeout 5 --max-time 10 https://portal.nutanix.com >/dev/null 2>&1; then
-    echo -e "${RED}ERROR: Cannot reach Nutanix portal (https://portal.nutanix.com).${NC}"
-    echo -e "${YELLOW}Troubleshooting steps:${NC}"
-    echo -e "  1. Verify your internet connection"
-    echo -e "  2. Check if a proxy is required: ${CYAN}curl -v https://portal.nutanix.com${NC}"
-    echo -e "  3. Verify firewall rules allow HTTPS traffic"
-    echo -e "  4. Test DNS resolution: ${CYAN}nslookup portal.nutanix.com${NC}"
+    status_add "$RED" "Error: cannot reach https://portal.nutanix.com."
+    status_add "$YELLOW" "Verify internet access, proxy settings, firewall, and DNS."
+    status_add "$CYAN" "Diagnostic: curl -v https://portal.nutanix.com"
+    status_pause
     exit 1
 fi
-echo -e "${GREEN}--> Outbound connectivity verified.${NC}"
+status_add "$GREEN" "Outbound connectivity verified."
 
 # ============================================================
 # PREFLIGHT 3: FIND OR DOWNLOAD BUNDLE
 # ============================================================
+status_begin "NKP bundle"
+status_add "$CYAN" "Looking for an existing NKP bundle or extracted bundle..."
+
 # Check for airgap bundle mistakenly placed in the directory
 if ls nkp-air-gapped-bundle_v*.tar.gz &>/dev/null; then
-    echo -e "${RED}ERROR: Found an NKP Air-Gapped Bundle in the current directory.${NC}"
-    echo -e "${YELLOW}This script requires the standard NKP Bundle, not the Air-Gapped Bundle.${NC}"
-    echo -e "  ${RED}Wrong:${NC}  nkp-air-gapped-bundle_v*.tar.gz"
-    echo -e "  ${GREEN}Correct:${NC} nkp-bundle_v*.tar.gz"
-    echo -e "${YELLOW}Please download the correct bundle from:${NC}"
-    echo -e "  https://portal.nutanix.com/page/downloads?product=nkp"
+    status_add "$RED" "Error: an NKP air-gapped bundle was found here."
+    status_add "$YELLOW" "This script requires the standard NKP Bundle."
+    status_add "$GREEN" "Correct filename: nkp-bundle_v*.tar.gz"
+    status_add "$CYAN" "Download: https://portal.nutanix.com/page/downloads?product=nkp"
+    status_pause
     exit 1
 fi
 
@@ -322,26 +1353,28 @@ else
 fi
 
 if [[ -z "$BUNDLE_FILE" ]]; then
-    echo -e "${YELLOW}NKP Bundle not found in current directory.${NC}"
-    echo -e "${YELLOW}Open browser to: ${NC}"
-    echo -e "${YELLOW}https://portal.nutanix.com/page/downloads?product=nkp${NC}"
-    echo -e "${YELLOW}Find and download the standard ${GREEN}NKP Bundle${YELLOW} (NOT the Air-Gapped Bundle).${NC}"
+    status_add "$YELLOW" "NKP Bundle not found locally."
+    show_message "NKP Bundle download required.\n\nOpen the Nutanix Support Portal and select Downloads > NKP.\nChoose the standard NKP Bundle for the release you want, then copy the download link itself.\n\nPaste that complete link on the next screen, including any query string or temporary access parameters.\nDo not use the portal page URL, NKP CLI link, or Air-Gapped Bundle link."
     while true; do
-        echo -ne "${CYAN}Please paste the full Nutanix Download URL: ${NC}"
-        read -r RAW_URL
+        prompt_text "Paste the full standard NKP Bundle download URL" "" RAW_URL
+        RAW_URL="$REPLY"
         [[ -z "$RAW_URL" ]] && exit 1
         BUNDLE_FILE=$(basename "${RAW_URL%%\?*}")
         if [[ "$BUNDLE_FILE" == *"air-gapped"* ]]; then
-            echo -e "${RED}ERROR: That URL points to the Air-Gapped Bundle.${NC}"
-            echo -e "${YELLOW}Please go back to the portal and copy the URL for the standard NKP Bundle.${NC}"
-            echo -e "  ${RED}Wrong:${NC}  nkp-air-gapped-bundle_v*.tar.gz"
-            echo -e "  ${GREEN}Correct:${NC} nkp-bundle_v*.tar.gz"
+            show_message "That URL points to the Air-Gapped Bundle.\n\nPlease copy the URL for the standard NKP Bundle."
             BUNDLE_FILE=""
             continue
         fi
-        curl -kL -o "$BUNDLE_FILE" "$RAW_URL"
-        break
+        status_add "$CYAN" "Downloading $(basename "$BUNDLE_FILE")..."
+        if curl -kL -sS -o "$BUNDLE_FILE" "$RAW_URL" >/dev/null 2>&1; then
+            status_add "$GREEN" "Bundle download completed."
+            break
+        fi
+        rm -f "$BUNDLE_FILE"
+        show_message "The bundle download failed.\n\nCheck the URL and network connectivity, then try again."
     done
+else
+    status_add "$GREEN" "Using bundle: $BUNDLE_FILE"
 fi
 
 # ============================================================
@@ -351,45 +1384,52 @@ VERSION_WITH_V=$(echo "$BUNDLE_FILE" | sed -E 's/.*bundle_(v[0-9]+\.[0-9]+\.[0-9
 TARGET_DIR="${BUNDLE_FILE%.tar.gz}"
 
 if [[ ! -d "$TARGET_DIR" ]]; then
-    echo -e "${CYAN}Extracting $BUNDLE_FILE into ./$TARGET_DIR...${NC}"
+    status_add "$CYAN" "Extracting $BUNDLE_FILE..."
     mkdir -p "$TARGET_DIR"
-    tar -xzvpf "$BUNDLE_FILE" -C "$TARGET_DIR" --strip-components=1
+    if ! tar -xzpf "$BUNDLE_FILE" -C "$TARGET_DIR" --strip-components=1 >/dev/null 2>&1; then
+        status_add "$RED" "Error: bundle extraction failed."
+        status_pause
+        exit 1
+    fi
 
     # Validate expected structure exists
     if [[ ! -f "$TARGET_DIR/cli/nkp" ]] || [[ ! -f "$TARGET_DIR/kubectl" ]]; then
-        echo -e "${RED}ERROR: Expected binaries not found in extracted bundle.${NC}"
-        echo -e "${YELLOW}Bundle structure may be different than expected.${NC}"
-        echo -e "Contents of extracted directory:${NC}"
-        find "$TARGET_DIR" -type f \( -name "nkp" -o -name "kubectl" \) 2>/dev/null | sed 's/^/  /' || echo "  (no matching files found)"
+        status_add "$RED" "Error: expected nkp and kubectl binaries were not found."
+        status_add "$YELLOW" "The bundle structure may be different than expected."
+        status_pause
         exit 1
     fi
-    echo -e "${CYAN}Removing tarball $BUNDLE_FILE...${NC}"
+    status_add "$GREEN" "Bundle contents validated."
+    status_add "$CYAN" "Removing downloaded tarball..."
     rm -f "$BUNDLE_FILE"
+else
+    status_add "$GREEN" "Using existing extracted bundle: $TARGET_DIR"
 fi
 
 # ============================================================
 # PREFLIGHT 5: INSTALL BINARIES TO /usr/local/bin
 # ============================================================
-echo -e "${CYAN}Installing nkp and kubectl to /usr/local/bin...${NC}"
+status_add "$CYAN" "Installing nkp and kubectl to /usr/local/bin..."
 
 if sudo cp "./$TARGET_DIR/cli/nkp" /usr/local/bin/nkp && \
    sudo cp "./$TARGET_DIR/kubectl" /usr/local/bin/kubectl && \
    sudo chmod 755 /usr/local/bin/nkp /usr/local/bin/kubectl; then
     if [[ -x "/usr/local/bin/nkp" ]] && [[ -x "/usr/local/bin/kubectl" ]]; then
-        echo -e "${GREEN}--> Binaries installed successfully.${NC}"
+        status_add "$GREEN" "NKP tools installed successfully."
     else
-        echo -e "${RED}Error: Files copied but permission check failed.${NC}"
+        status_add "$RED" "Error: files copied but permission check failed."
+        status_pause
         exit 1
     fi
 else
-    echo -e "${RED}Error: Failed to install binaries. Check sudo permissions or source paths.${NC}"
+    status_add "$RED" "Error: failed to install binaries. Check sudo permissions."
+    status_pause
     exit 1
 fi
 
 # Define Bundle Paths
 KOMMANDER_BUNDLE="./$TARGET_DIR/container-images/kommander-image-bundle-${VERSION_WITH_V}.tar"
 KONVOY_BUNDLE="./$TARGET_DIR/container-images/konvoy-image-bundle-${VERSION_WITH_V}.tar"
-BUNDLE_FLAGS="--bundle ${KOMMANDER_BUNDLE},${KONVOY_BUNDLE}"
 
 # Resolve bootstrap image path using the same VERSION_WITH_V regex-derived value
 BOOTSTRAP_IMAGE="./$TARGET_DIR/konvoy-bootstrap-image-${VERSION_WITH_V}.tar"
@@ -397,84 +1437,317 @@ BOOTSTRAP_IMAGE="./$TARGET_DIR/konvoy-bootstrap-image-${VERSION_WITH_V}.tar"
 # ============================================================
 # USER INPUTS
 # ============================================================
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${CYAN}      NKP Version Detected: ${GREEN}${VERSION_WITH_V}${NC}"
+status_add "$PURPLE" "NKP Version Detected: ${VERSION_WITH_V}"
 if [[ -f "$DEFAULTS_FILE" ]]; then
-    echo -e "${CYAN}      Defaults loaded from: ${GREEN}${DEFAULTS_FILE}${NC}"
+    status_add "$CYAN" "Defaults loaded from: ${DEFAULTS_FILE}"
 fi
-echo -e "${YELLOW}=======================================================${NC}"
 
-get_input "Prism Central Endpoint (IP): "       PC_ENDPOINT
-get_input "Prism Username: "                     NUTANIX_USER
-
-# Password — never stored, no default shown
-while [[ -z "$NUTANIX_PASSWORD" ]]; do
-    echo -ne "${YELLOW}Prism Password: ${NC}"
-    read -rs NUTANIX_PASSWORD
-    echo ""
+PC_ENDPOINT_DEFAULT=$(get_default "pc_endpoint")
+while true; do
+    prompt_text "Prism Central Endpoint (IPv4 address)" "$PC_ENDPOINT_DEFAULT" PC_ENDPOINT ip
+    PC_ENDPOINT="$REPLY"
+    if validate_ipv4 "$PC_ENDPOINT"; then
+        save_connection_default "pc_endpoint" "$PC_ENDPOINT"
+        break
+    fi
+    show_message "Enter a valid Prism Central IPv4 address."
+    PC_ENDPOINT_DEFAULT=""
 done
 
-get_input "NKP Cluster Name (lowercase only): " CLUSTER_NAME "lowercase"
-get_input "Control Plane VIP: "                  VIP
-get_input "VM Image Name (.qcow2): "             VM_IMAGE
-get_input "AHV Cluster Name: "                   AHV_CLUSTER
-get_input "Network Name: "                       NETWORK
-get_input "Storage Container: "                  STORAGE "" "SelfServiceContainer"
-get_input "LB IP Range (x.x.x.x-y.y.y.y): "      LB_RANGE "range"
+NUTANIX_USER_DEFAULT=$(get_default "nutanix_user")
+while true; do
+    prompt_text "Prism Username" "$NUTANIX_USER_DEFAULT" NUTANIX_USER
+    NUTANIX_USER="$REPLY"
+    if [[ -n "$NUTANIX_USER" ]]; then
+        save_connection_default "nutanix_user" "$NUTANIX_USER"
+        break
+    fi
+    show_message "Prism username cannot be empty."
+    NUTANIX_USER_DEFAULT=""
+done
+
+# Password — never stored, no default shown.
+NUTANIX_PASSWORD=""
+prompt_password "Prism Password"
+NUTANIX_PASSWORD="$REPLY"
+
+# Set v4 API credentials immediately so the remaining fields can be selected
+# from Prism Central rather than typed by hand.
+PCIPADDRESS="$PC_ENDPOINT"
+PCADMIN="$NUTANIX_USER"
+PCPASSWD="$NUTANIX_PASSWORD"
+
+show_progress "Loading AHV clusters from Prism Central"
+AHV_CLUSTER_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters?\$limit=100")
+if api_failed "$AHV_CLUSTER_RESPONSE"; then
+    show_message "$(api_error_message "$AHV_CLUSTER_RESPONSE")"
+    exit 1
+fi
+
+CLUSTER_NAMES=()
+CLUSTER_IDS=()
+while IFS=$'\t' read -r CLUSTER_NAME_ITEM CLUSTER_ID_ITEM; do
+    [[ -z "$CLUSTER_NAME_ITEM" ]] && continue
+    CLUSTER_NAMES+=("$CLUSTER_NAME_ITEM")
+    CLUSTER_IDS+=("$CLUSTER_ID_ITEM")
+done < <(echo "$AHV_CLUSTER_RESPONSE" | jq -r '
+    .data[]?
+    | select(((.config.clusterFunction // []) | index("PRISM_CENTRAL")) == null)
+    | [(.name // ""), (.extId // "")]
+    | @tsv' 2>/dev/null)
+
+if [[ ${#CLUSTER_NAMES[@]} -eq 0 ]]; then
+    show_message "No AHV clusters were returned by Prism Central.\n\nConfirm that the target AHV cluster is registered with this Prism Central and that the account can view it."
+    exit 1
+fi
+
+SELECTED_INDEX=$(select_option "Select the AHV Cluster for the NKP nodes" "${CLUSTER_NAMES[@]}") || exit 1
+AHV_CLUSTER="${CLUSTER_NAMES[$((SELECTED_INDEX - 1))]}"
+AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$((SELECTED_INDEX - 1))]}"
+
+show_progress "Loading networks for ${AHV_CLUSTER}"
+NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0.a1/config/subnets?\$limit=100")
+if api_failed "$NETWORK_RESPONSE"; then
+    # A few PC releases expose the same collection under the stable v4
+    # namespace instead of the v4.0.a1 preview namespace.
+    NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0/config/subnets?\$limit=100")
+fi
+if api_failed "$NETWORK_RESPONSE"; then
+    show_message "$(api_error_message "$NETWORK_RESPONSE")"
+    exit 1
+fi
+
+NETWORK_NAMES_ALL=()
+NETWORK_CIDRS_ALL=()
+NETWORK_NAMES_MATCHED=()
+NETWORK_CIDRS_MATCHED=()
+while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_CLUSTER_ID_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM; do
+    [[ -z "$NETWORK_NAME_ITEM" || -z "$NETWORK_IP_ITEM" || -z "$NETWORK_PREFIX_ITEM" ]] && continue
+    [[ ! "$NETWORK_PREFIX_ITEM" =~ ^[0-9]+$ || "$NETWORK_PREFIX_ITEM" -gt 32 ]] && continue
+    NETWORK_NAMES_ALL+=("$NETWORK_NAME_ITEM")
+    NETWORK_CIDRS_ALL+=("${NETWORK_IP_ITEM}/${NETWORK_PREFIX_ITEM}")
+    if [[ -n "$AHV_CLUSTER_EXT_ID" && "$NETWORK_CLUSTER_ID_ITEM" == "$AHV_CLUSTER_EXT_ID" ]]; then
+        NETWORK_NAMES_MATCHED+=("$NETWORK_NAME_ITEM")
+        NETWORK_CIDRS_MATCHED+=("${NETWORK_IP_ITEM}/${NETWORK_PREFIX_ITEM}")
+    fi
+done < <(echo "$NETWORK_RESPONSE" | jq -r '
+    .data[]?
+    | [
+        (.name // ""),
+        (if (.clusterReference | type) == "object" then (.clusterReference.extId // "") else (.clusterReference // "") end),
+        (.ipConfig[0].ipv4.ipSubnet.ip.value // ""),
+        (.ipConfig[0].ipv4.ipSubnet.prefixLength // "")
+      ]
+    | @tsv' 2>/dev/null)
+
+# Some PC versions omit clusterReference from the list response. If there
+# were no exact matches, retain all usable subnets and let the user choose.
+if [[ ${#NETWORK_NAMES_MATCHED[@]} -gt 0 ]]; then
+    NETWORK_NAMES=("${NETWORK_NAMES_MATCHED[@]}")
+    NETWORK_CIDRS=("${NETWORK_CIDRS_MATCHED[@]}")
+else
+    NETWORK_NAMES=("${NETWORK_NAMES_ALL[@]}")
+    NETWORK_CIDRS=("${NETWORK_CIDRS_ALL[@]}")
+fi
+
+if [[ ${#NETWORK_NAMES[@]} -eq 0 ]]; then
+    show_message "No usable IPv4 AHV networks were returned by Prism Central.\n\nThe selected network must expose an IPv4 subnet and prefix length through the Networking v4 API."
+    exit 1
+fi
+
+NETWORK_LABELS=()
+for ((INDEX=0; INDEX<${#NETWORK_NAMES[@]}; INDEX++)); do
+    NETWORK_LABELS+=("${NETWORK_NAMES[$INDEX]} [${NETWORK_CIDRS[$INDEX]}]")
+done
+SELECTED_INDEX=$(select_option "Select the AHV Network / subnet" "${NETWORK_LABELS[@]}") || exit 1
+NETWORK_INDEX=$((SELECTED_INDEX - 1))
+NETWORK="${NETWORK_NAMES[$NETWORK_INDEX]}"
+SUBNET_CIDR="${NETWORK_CIDRS[$NETWORK_INDEX]}"
+SUBNET_NETWORK_IP="${SUBNET_CIDR%/*}"
+SUBNET_PREFIX_LENGTH="${SUBNET_CIDR##*/}"
+SUBNET_INPUT_PREFIX=$(network_input_prefix "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH")
+
+show_progress "Loading storage containers from Prism Central"
+STORAGE_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/storage-containers?\$limit=100")
+if api_failed "$STORAGE_RESPONSE"; then
+    STORAGE_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.2/config/storage-containers?\$limit=100")
+fi
+if api_failed "$STORAGE_RESPONSE"; then
+    show_message "$(api_error_message "$STORAGE_RESPONSE")"
+    exit 1
+fi
+
+STORAGE_NAMES=()
+while IFS= read -r STORAGE_NAME_ITEM; do
+    [[ -z "$STORAGE_NAME_ITEM" ]] && continue
+    STORAGE_NAMES+=("$STORAGE_NAME_ITEM")
+done < <(echo "$STORAGE_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sort -fu)
+if [[ ${#STORAGE_NAMES[@]} -eq 0 ]]; then
+    show_message "No storage containers were returned by Prism Central."
+    exit 1
+fi
+SELECTED_INDEX=$(select_option "Select the storage container for persistent volumes" "${STORAGE_NAMES[@]}") || exit 1
+STORAGE="${STORAGE_NAMES[$((SELECTED_INDEX - 1))]}"
+
+show_progress "Loading VM images from Prism Central"
+IMAGE_RESPONSE=$(call_curl_v4 "GET" "/vmm/v4.0/content/images?\$limit=100")
+if api_failed "$IMAGE_RESPONSE"; then
+    show_message "$(api_error_message "$IMAGE_RESPONSE")"
+    exit 1
+fi
+
+IMAGE_NAMES=()
+IMAGE_K8S_VERSIONS=()
+IMAGE_LABELS=()
+while IFS= read -r IMAGE_NAME_ITEM; do
+    [[ -z "$IMAGE_NAME_ITEM" ]] && continue
+    IMAGE_K8S_VERSION_ITEM=$(extract_kubernetes_version "$IMAGE_NAME_ITEM" 2>/dev/null || true)
+    [[ "${IMAGE_NAME_ITEM,,}" == *rocky* && -n "$IMAGE_K8S_VERSION_ITEM" ]] || continue
+    IMAGE_NAMES+=("$IMAGE_NAME_ITEM")
+    IMAGE_K8S_VERSIONS+=("$IMAGE_K8S_VERSION_ITEM")
+    IMAGE_LABELS+=("${IMAGE_NAME_ITEM} [Kubernetes ${IMAGE_K8S_VERSION_ITEM:-unknown}]")
+done < <(echo "$IMAGE_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sort -fu)
+if [[ ${#IMAGE_NAMES[@]} -eq 0 ]]; then
+    show_message "No versioned NKP Rocky VM images were returned by Prism Central.\n\nUpload the original NKP Rocky image; its name must contain a Kubernetes version such as 1.34.3."
+    exit 1
+fi
+SELECTED_INDEX=$(select_option "Select the VM image for NKP nodes" "${IMAGE_LABELS[@]}") || exit 1
+VM_IMAGE="${IMAGE_NAMES[$((SELECTED_INDEX - 1))]}"
+VM_IMAGE_K8S_VERSION="${IMAGE_K8S_VERSIONS[$((SELECTED_INDEX - 1))]}"
+
+CLUSTER_NAME_DEFAULT=$(get_default "cluster_name")
+while true; do
+    prompt_text "NKP Cluster Name (lowercase only)" "$CLUSTER_NAME_DEFAULT" CLUSTER_NAME lowercase
+    CLUSTER_NAME="$REPLY"
+    if [[ -n "$CLUSTER_NAME" && ! "$CLUSTER_NAME" =~ [A-Z] ]]; then
+        break
+    fi
+    show_message "Cluster name cannot be empty and must contain lowercase characters only."
+    CLUSTER_NAME_DEFAULT=""
+done
+
+validate_host_suffix() {
+    local SUFFIX="$1"
+    local PARTS
+    local CANDIDATE="${SUBNET_INPUT_PREFIX}${SUFFIX}"
+    IFS='.' read -r -a PARTS <<< "$SUFFIX"
+    [[ ${#PARTS[@]} -eq "$SUBNET_HOST_OCTETS" ]] || return 1
+    validate_ipv4 "$CANDIDATE"
+}
+
+default_host_suffix() {
+    local A B C D
+    IFS=. read -r A B C D <<< "$SUBNET_NETWORK_IP"
+    case "$SUBNET_HOST_OCTETS" in
+        1) echo "100" ;;
+        2) echo "${C}.100" ;;
+        3) echo "${B}.${C}.100" ;;
+        *) echo "${A}.${B}.${C}.100" ;;
+    esac
+}
+
+SUBNET_HOST_OCTETS=$(host_octet_count "$SUBNET_PREFIX_LENGTH")
+VIP_SAVED=$(get_default "vip")
+VIP_SUFFIX_DEFAULT=$(suffix_from_ip "$VIP_SAVED" "$SUBNET_PREFIX_LENGTH")
+while true; do
+    prompt_host_suffix "Control Plane VIP (${SUBNET_CIDR})" "$VIP_SUFFIX_DEFAULT"
+    VIP_SUFFIX="$REPLY"
+    VIP="${SUBNET_INPUT_PREFIX}${VIP_SUFFIX}"
+    if validate_host_suffix "$VIP_SUFFIX" && is_in_same_subnet "$VIP" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
+        break
+    fi
+    show_message "The Control Plane VIP must be a valid address inside ${SUBNET_CIDR}."
+    VIP_SUFFIX_DEFAULT=""
+done
+
+LB_SAVED=$(get_default "lb_range")
+LB_START_SAVED="${LB_SAVED%%-*}"
+LB_END_SAVED="${LB_SAVED##*-}"
+LB_START_SUFFIX_DEFAULT=$(suffix_from_ip "$LB_START_SAVED" "$SUBNET_PREFIX_LENGTH")
+[[ -z "$LB_START_SUFFIX_DEFAULT" ]] && LB_START_SUFFIX_DEFAULT=$(default_host_suffix)
+LB_COUNT_DEFAULT=10
+if validate_ipv4 "$LB_START_SAVED" && validate_ipv4 "$LB_END_SAVED" && \
+   (( $(ip2int "$LB_END_SAVED") >= $(ip2int "$LB_START_SAVED") )); then
+    LB_COUNT_DEFAULT=$(( $(ip2int "$LB_END_SAVED") - $(ip2int "$LB_START_SAVED") + 1 ))
+fi
+(( LB_COUNT_DEFAULT < 1 || LB_COUNT_DEFAULT > 254 )) && LB_COUNT_DEFAULT=10
+
+while true; do
+    prompt_host_suffix "Load Balancer range start (${SUBNET_CIDR})" "$LB_START_SUFFIX_DEFAULT"
+    LB_START_SUFFIX="$REPLY"
+    LB_START="${SUBNET_INPUT_PREFIX}${LB_START_SUFFIX}"
+    if ! validate_host_suffix "$LB_START_SUFFIX" || ! is_in_same_subnet "$LB_START" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
+        show_message "The Load Balancer start must be inside ${SUBNET_CIDR}."
+        LB_START_SUFFIX_DEFAULT=""
+        continue
+    fi
+
+    LB_COUNT_OPTIONS=("$LB_COUNT_DEFAULT")
+    for ((COUNT=1; COUNT<=254; COUNT++)); do
+        [[ "$COUNT" == "$LB_COUNT_DEFAULT" ]] || LB_COUNT_OPTIONS+=("$COUNT")
+    done
+    SELECTED_INDEX=$(select_option "How many Load Balancer IPs should be reserved?" "${LB_COUNT_OPTIONS[@]}") || exit 1
+    LB_COUNT="${LB_COUNT_OPTIONS[$((SELECTED_INDEX - 1))]}"
+    LB_END_VALUE=$(( $(ip2int "$LB_START") + LB_COUNT - 1 ))
+    if (( LB_END_VALUE <= 4294967295 )); then
+        LB_END=$(int2ip "$LB_END_VALUE")
+    else
+        LB_END=""
+    fi
+
+    if validate_ipv4 "$LB_END" && is_in_same_subnet "$LB_END" "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH"; then
+        LB_RANGE="${LB_START}-${LB_END}"
+        break
+    fi
+    show_message "That range does not fit inside ${SUBNET_CIDR}; choose a lower start or a smaller count."
+done
 
 # OPTIONAL: DEPLOYMENT SIZING
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${CYAN}      OPTIONAL: Deployment Sizing${NC}"
-echo -e "${YELLOW}(Press Enter to use defaults)${NC}"
-echo -e "${YELLOW}=======================================================${NC}"
-
 # License tier — affects default worker count
-read -p "Do you plan to license NKP Pro/Ultimate? (y/N): " NKP_LICENSED
+LICENSE_SELECTION=$(select_option "Do you plan to license NKP Pro/Ultimate?" "No" "Yes") || exit 1
+[[ "$LICENSE_SELECTION" == "2" ]] && NKP_LICENSED="y" || NKP_LICENSED="n"
 if [[ "$NKP_LICENSED" =~ ^[Yy]$ ]]; then
     LICENSE_DEFAULT=4
 else
     LICENSE_DEFAULT=2
 fi
 
-# Control plane replicas — default from saved or fall back to 1
+# Control plane replicas — selectable, default from saved or fall back to 1
 CP_REPLICAS_DEFAULT=$(get_default "cp_replicas")
 CP_REPLICAS_DEFAULT=${CP_REPLICAS_DEFAULT:-1}
-while true; do
-    read -p "Control Plane Replicas (1, 3, or 5 - default: ${CP_REPLICAS_DEFAULT}): " CP_REPLICAS
-    CP_REPLICAS=${CP_REPLICAS:-$CP_REPLICAS_DEFAULT}
-    if [[ "$CP_REPLICAS" =~ ^[135]$ ]]; then
-        break
-    fi
-    echo -e "${RED}Error: Control plane replicas must be an odd number (1, 3, or 5) for proper quorum.${NC}"
+CP_OPTIONS=(1 3 5)
+CP_DEFAULT_INDEX=0
+for INDEX in "${!CP_OPTIONS[@]}"; do
+    [[ "${CP_OPTIONS[$INDEX]}" == "$CP_REPLICAS_DEFAULT" ]] && CP_DEFAULT_INDEX="$INDEX"
 done
+SELECTED_INDEX=$(select_compact_option "Select the Control Plane node count" "$CP_DEFAULT_INDEX" "${CP_OPTIONS[@]}") || exit 1
+CP_REPLICAS="${CP_OPTIONS[$((SELECTED_INDEX - 1))]}"
 
-# Worker replicas — default from saved, else from licensing answer
+# Worker replicas — selectable, default from saved, else from licensing answer
 WORKER_REPLICAS_DEFAULT=$(get_default "worker_replicas")
 WORKER_REPLICAS_DEFAULT=${WORKER_REPLICAS_DEFAULT:-$LICENSE_DEFAULT}
-while true; do
-    read -p "Worker Replicas (1-10, default: ${WORKER_REPLICAS_DEFAULT}): " WORKER_REPLICAS
-    WORKER_REPLICAS=${WORKER_REPLICAS:-$WORKER_REPLICAS_DEFAULT}
-    if [[ "$WORKER_REPLICAS" =~ ^([1-9]|10)$ ]]; then
-        break
-    fi
-    echo -e "${RED}Error: Must be a number between 1 and 10.${NC}"
+WORKER_OPTIONS=()
+for REPLICA_OPTION in {1..10}; do
+    WORKER_OPTIONS+=("$REPLICA_OPTION")
 done
+WORKER_DEFAULT_INDEX=0
+if [[ "$WORKER_REPLICAS_DEFAULT" =~ ^([1-9]|10)$ ]]; then
+    WORKER_DEFAULT_INDEX=$((WORKER_REPLICAS_DEFAULT - 1))
+fi
+SELECTED_INDEX=$(select_compact_option "Select the Worker node count" "$WORKER_DEFAULT_INDEX" "${WORKER_OPTIONS[@]}") || exit 1
+WORKER_REPLICAS="${WORKER_OPTIONS[$((SELECTED_INDEX - 1))]}"
 
 # ============================================================
-# SAVE DEFAULTS — written immediately after inputs, before any API calls
+# SAVE DEFAULTS — written immediately after inputs
 # ============================================================
 save_defaults
-echo -e "${GREEN}--> Inputs saved to ${DEFAULTS_FILE}${NC}"
-
-# Set v4 API credentials from collected inputs
-PCIPADDRESS="$PC_ENDPOINT"
-PCADMIN="$NUTANIX_USER"
-PCPASSWD="$NUTANIX_PASSWORD"
 
 # ============================================================
 # VERSION VALIDATION (v4 API)
 # ============================================================
-echo -e "${YELLOW}Validating Prism Central and AOS versions...${NC}"
+status_begin "Final environment checks"
+status_add "$GREEN" "Inputs saved to ${DEFAULTS_FILE}"
+status_add "$YELLOW" "Validating Prism Central and AOS versions..."
 
 # A. PC version — select the PRISM_CENTRAL entity from cluster list
 PC_V4_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters")
@@ -493,13 +1766,10 @@ PC_RAW=$(echo "$PC_V4_RESPONSE" | jq -r '
     // empty' 2>/dev/null | head -n1)
 
 if [[ -z "$PC_VERSION" ]]; then
-    echo -e "${RED}ERROR: Failed to retrieve Prism Central version.${NC}"
-    echo -e "${YELLOW}Possible causes:${NC}"
-    echo -e "  1. Invalid Prism Central endpoint: $PC_ENDPOINT"
-    echo -e "  2. Invalid credentials (check username/password)"
-    echo -e "  3. Network connectivity to Prism Central (port 9440)"
-    echo -e "  4. Prism Central is not responding"
-    echo -e "${YELLOW}To debug, test connectivity: ${CYAN}curl -k https://${PC_ENDPOINT}:9440/api/clustermgmt/v4.0/config/clusters${NC}"
+    status_add "$RED" "Error: failed to retrieve the Prism Central version."
+    status_add "$YELLOW" "Check endpoint, credentials, port 9440, and Prism Central availability."
+    status_add "$CYAN" "Diagnostic: curl -k https://${PC_ENDPOINT}:9440/api/clustermgmt/v4.0/config/clusters"
+    status_pause
     exit 1
 fi
 
@@ -511,183 +1781,208 @@ AOS_VERSION=$(echo "$AHV_CLUSTER_RESPONSE" | jq -r \
     2>/dev/null | head -n1)
 
 if [[ -z "$AOS_VERSION" ]]; then
-    echo -e "${RED}ERROR: Could not find AHV Cluster named: ${CYAN}${AHV_CLUSTER}${NC}"
-    echo -e "${YELLOW}Available clusters in Prism Central:${NC}"
-    echo "$AHV_CLUSTER_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sed 's/^/  - /' || echo "  (unable to list clusters)"
+    status_add "$RED" "Error: could not find AHV cluster ${AHV_CLUSTER}."
+    status_add "$YELLOW" "The selected cluster may no longer be available."
+    status_pause
     exit 1
 fi
 
-if ! version_gt "$PC_VERSION" "7.3" || ! version_gt "$AOS_VERSION" "7.3"; then
-    echo -e "${RED}ERROR: Installation halted. Incompatible versions detected.${NC}"
-    echo -e "${YELLOW}Required: Prism Central > 7.3, AOS > 7.3${NC}"
-    echo -e "${CYAN}Detected:${NC}"
-    echo -e "  Prism Central: $PC_RAW"
-    echo -e "  AOS: $AOS_VERSION"
+NKP_VERSION_KEY=$(echo "$VERSION_WITH_V" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
+if [[ ! -f "$COMPATIBILITY_FILE" ]]; then
+    show_message "Compatibility data file not found:\n\n${COMPATIBILITY_FILE}"
     exit 1
 fi
 
-echo -e "${GREEN}--> Version validation passed.${NC}"
+COMPATIBILITY_ENTRY=$(jq -c --arg VERSION "$NKP_VERSION_KEY" '.[$VERSION] // empty' "$COMPATIBILITY_FILE" 2>/dev/null)
+if [[ -z "$COMPATIBILITY_ENTRY" ]]; then
+    show_message "No compatibility data is defined for NKP ${NKP_VERSION_KEY}.\n\nAdd this NKP release to ${COMPATIBILITY_FILE} before deploying."
+    exit 1
+fi
 
-# ============================================================
-# SUMMARY LOOP — includes image validation
-# ============================================================
-VM_IMAGE_VALID=false
+if ! validate_compatibility "$COMPATIBILITY_ENTRY"; then
+    exit 1
+fi
 
-while true; do
-    clear
-    echo -e "${YELLOW}=======================================================${NC}"
-    echo -e "${YELLOW}           FINAL DEPLOYMENT SUMMARY                    ${NC}"
-    echo -e "${YELLOW}=======================================================${NC}"
-    printf "${CYAN}%-25s${NC} : %s\n" "NKP Version"           "$VERSION_WITH_V"
-    printf "${CYAN}%-25s${NC} : %s\n" "Prism Central Version"  "$PC_RAW"
-    printf "${CYAN}%-25s${NC} : %s\n" "AOS Version"            "$AOS_VERSION"
-    printf "${CYAN}%-25s${NC} : %s\n" "Cluster Name"           "$CLUSTER_NAME"
-    printf "${CYAN}%-25s${NC} : %s\n" "PC Endpoint"            "$PC_ENDPOINT"
-    printf "${CYAN}%-25s${NC} : %s\n" "Control Plane VIP"      "$VIP"
-    printf "${CYAN}%-25s${NC} : %s\n" "VM Image Name"          "$VM_IMAGE"
-    printf "${CYAN}%-25s${NC} : %s\n" "AHV Cluster Name"       "$AHV_CLUSTER"
-    printf "${CYAN}%-25s${NC} : %s\n" "AHV Network Name"       "$NETWORK"
-    printf "${CYAN}%-25s${NC} : %s\n" "Storage Container"      "$STORAGE"
-    printf "${CYAN}%-25s${NC} : %s\n" "Load Balancer Range"    "$LB_RANGE"
-    printf "${CYAN}%-25s${NC} : %s\n" "Pod CIDR"               "100.64.0.0/14"
-    printf "${CYAN}%-25s${NC} : %s\n" "Service CIDR"           "100.68.0.0/16"
-    printf "${CYAN}%-25s${NC} : %s\n" "Control Plane Replicas" "$CP_REPLICAS"
-    printf "${CYAN}%-25s${NC} : %s\n" "Worker Replicas"        "$WORKER_REPLICAS"
-    echo -e "${YELLOW}=======================================================${NC}"
-
-    # Validate image — show result inline in summary
-    echo -ne "${CYAN}Validating VM image against Prism Central...${NC} "
-    validate_vm_image "$VM_IMAGE"
-
-if [[ "$VM_IMAGE_VALID" == true ]]; then
-        echo -e "${GREEN}  ✔  Image '${VM_IMAGE}' found on Prism Central.${NC}"
-        echo ""
-        read -p "Proceed with deployment? (Y/n) > " CONFIRM
-        [[ "$CONFIRM" =~ ^[Nn]$ ]] && exit 0
-        break
-    else
-        # validate_vm_image already printed the candidate list
-        read -p "Enter correct VM Image Name: " NEW_IMAGE
-        if [[ -n "$NEW_IMAGE" ]]; then
-            VM_IMAGE="$NEW_IMAGE"
-            save_defaults
-        fi
-    fi
-done
+status_add "$GREEN" "NKP, platform, and Kubernetes image compatibility passed."
 
 # ============================================================
 # SSH KEY SETUP
 # ============================================================
-echo -e "${CYAN}Setting up SSH key...${NC}"
+status_add "$CYAN" "Setting up SSH key..."
 if [[ ! -f ~/.ssh/id_rsa ]]; then
-    echo -e "${YELLOW}--> No SSH key found. Generating RSA 4096 key...${NC}"
+    status_add "$YELLOW" "No SSH key found; generating an RSA 4096 key..."
     mkdir -p ~/.ssh
     chmod 700 ~/.ssh
     ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
-    echo -e "${GREEN}--> SSH key generated: ~/.ssh/id_rsa${NC}"
+    status_add "$GREEN" "SSH key generated: ~/.ssh/id_rsa"
 fi
 export SSH_PUBLIC_KEY_FILE=~/.ssh/id_rsa.pub
-echo -e "${GREEN}--> SSH_PUBLIC_KEY_FILE set to: ${SSH_PUBLIC_KEY_FILE}${NC}"
+status_add "$GREEN" "SSH public key ready."
 
-# ============================================================
-# PREFLIGHT 6: LOAD KONVOY BOOTSTRAP IMAGE
-# ============================================================
-echo -e "${CYAN}Loading Konvoy bootstrap image...${NC}"
-
-if [[ ! -f "$BOOTSTRAP_IMAGE" ]]; then
-    echo -e "${RED}ERROR: Bootstrap image not found: ${BOOTSTRAP_IMAGE}${NC}"
-    echo -e "${YELLOW}Expected path: ${BOOTSTRAP_IMAGE}${NC}"
-    echo -e "${YELLOW}Available .tar files in bundle directory:${NC}"
-    ls "./$TARGET_DIR"/*.tar 2>/dev/null | sed 's/^/  /' || echo "  (no .tar files found)"
-    exit 1
-fi
-
-echo -e "${CYAN}--> Loading: $(basename "$BOOTSTRAP_IMAGE")${NC}"
-if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
-    podman load -i "$BOOTSTRAP_IMAGE"
-    LOAD_EXIT=$?
-    if [[ $LOAD_EXIT -ne 0 ]]; then
-        echo -e "${RED}ERROR: Failed to load bootstrap image (exit code ${LOAD_EXIT}).${NC}"
-        echo -e "${YELLOW}Verify the .tar file is not corrupted and that ${CONTAINER_RUNTIME} is functioning correctly.${NC}"
-        exit 1
-    fi
-    # Podman does not automatically resolve the docker.io registry prefix;
-    # nkp references the image as docker.io/mesosphere/konvoy-bootstrap:vVERSION
-    BOOTSTRAP_TAG="docker.io/mesosphere/konvoy-bootstrap:${VERSION_WITH_V}"
-    echo -e "${CYAN}--> Tagging bootstrap image for Podman: ${BOOTSTRAP_TAG}${NC}"
-    podman image tag "konvoy-bootstrap:${VERSION_WITH_V}" "$BOOTSTRAP_TAG"
-    if [[ $? -ne 0 ]]; then
-        echo -e "${RED}ERROR: Failed to tag bootstrap image as ${BOOTSTRAP_TAG}.${NC}"
-        echo -e "${YELLOW}Verify the image loaded correctly with: podman images | grep konvoy-bootstrap${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}--> Bootstrap image tagged successfully.${NC}"
-elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
-    docker load -i "$BOOTSTRAP_IMAGE"
-    LOAD_EXIT=$?
-else
-    echo -e "${RED}ERROR: No container runtime available to load bootstrap image.${NC}"
-    echo -e "${YELLOW}Install podman or docker before running this script.${NC}"
-    exit 1
-fi
-
-if [[ $LOAD_EXIT -ne 0 ]]; then
-    echo -e "${RED}ERROR: Failed to load bootstrap image (exit code ${LOAD_EXIT}).${NC}"
-    echo -e "${YELLOW}Verify the .tar file is not corrupted and that ${CONTAINER_RUNTIME} is functioning correctly.${NC}"
-    exit 1
-fi
-echo -e "${GREEN}--> Konvoy bootstrap image loaded successfully.${NC}"
-
-# ============================================================
-# DEPLOYMENT
-# ============================================================
+# Prepare deployment environment before rendering the final review screen.
 export NUTANIX_USER
 export NUTANIX_PASSWORD
 export NUTANIX_ENDPOINT="https://${PC_ENDPOINT}:9440"
 export KUBECONFIG="${SCRIPT_DIR}/${CLUSTER_NAME}.conf"
 
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${YELLOW}           KUBECONFIG LOCATION                          ${NC}"
-echo -e "${YELLOW}=======================================================${NC}"
-echo -e "${CYAN}Your kubeconfig will be saved in:${NC}"
-echo -e "  ${GREEN}${KUBECONFIG}${NC}"
-echo -e "${YELLOW}This file is required to access the cluster.${NC}"
-echo -e "${YELLOW}Ensure this location is persistent and backed up.${NC}"
-echo -e "${YELLOW}=======================================================${NC}"
+# ============================================================
+# FINAL SUMMARY — approval happens before image loading/deployment
+# ============================================================
+# The VM image was selected from the Prism Central image list above, so it is
+# already known to exist. Avoid a second filtered API request here; some PC
+# releases do not support that filter consistently.
+while true; do
+    render_final_summary
+    final_summary_confirmation
+    CONFIRM_RESULT=$?
+    if [[ $CONFIRM_RESULT -eq 0 ]]; then
+        break
+    elif [[ $CONFIRM_RESULT -eq 1 ]]; then
+        exit 0
+    fi
+done
 
-echo -e "${GREEN}Starting Deployment...${NC}"
-nkp create cluster nutanix \
-  $BUNDLE_FLAGS \
-  --cluster-name                              "${CLUSTER_NAME}" \
-  --endpoint                                  "${NUTANIX_ENDPOINT}" \
-  --insecure \
-  --control-plane-prism-element-cluster       "${AHV_CLUSTER}" \
-  --worker-prism-element-cluster              "${AHV_CLUSTER}" \
-  --control-plane-subnets                     "${NETWORK}" \
-  --worker-subnets                            "${NETWORK}" \
-  --vm-image                                  "${VM_IMAGE}" \
-  --control-plane-endpoint-ip                 "${VIP}" \
-  --csi-storage-container                     "${STORAGE}" \
-  --kubernetes-service-load-balancer-ip-range "${LB_RANGE}" \
-  --kubernetes-pod-network-cidr               "100.64.0.0/14" \
-  --kubernetes-service-cidr                   "100.68.0.0/16" \
-  --control-plane-replicas                    "$CP_REPLICAS" \
-  --worker-replicas                           "$WORKER_REPLICAS" \
-  --ssh-username                              "nutanix" \
-  --ssh-public-key-file                       "${SSH_PUBLIC_KEY_FILE}" \
-  --timeout                                          "60m0s" \
-  --self-managed
+# ============================================================
+# PREFLIGHT 6: LOAD KONVOY BOOTSTRAP IMAGE
+# ============================================================
+status_add "$CYAN" "Loading Konvoy bootstrap image..."
+
+if [[ ! -f "$BOOTSTRAP_IMAGE" ]]; then
+    status_add "$RED" "Error: bootstrap image not found."
+    status_add "$YELLOW" "Expected: ${BOOTSTRAP_IMAGE}"
+    status_pause
+    exit 1
+fi
+
+status_add "$CYAN" "Loading: $(basename "$BOOTSTRAP_IMAGE")"
+if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
+    podman load -i "$BOOTSTRAP_IMAGE" >/dev/null 2>&1
+    LOAD_EXIT=$?
+    if [[ $LOAD_EXIT -ne 0 ]]; then
+        status_add "$RED" "Error: failed to load bootstrap image (exit ${LOAD_EXIT})."
+        status_add "$YELLOW" "Verify the .tar file and ${CONTAINER_RUNTIME} runtime."
+        status_pause
+        exit 1
+    fi
+    # Podman does not automatically resolve the docker.io registry prefix;
+    # nkp references the image as docker.io/mesosphere/konvoy-bootstrap:vVERSION
+    BOOTSTRAP_TAG="docker.io/mesosphere/konvoy-bootstrap:${VERSION_WITH_V}"
+    status_add "$CYAN" "Tagging bootstrap image for Podman..."
+    podman image tag "konvoy-bootstrap:${VERSION_WITH_V}" "$BOOTSTRAP_TAG" >/dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        status_add "$RED" "Error: failed to tag bootstrap image."
+        status_add "$YELLOW" "Verify with: podman images | grep konvoy-bootstrap"
+        status_pause
+        exit 1
+    fi
+    status_add "$GREEN" "Bootstrap image tagged successfully."
+elif [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
+    docker load -i "$BOOTSTRAP_IMAGE" >/dev/null 2>&1
+    LOAD_EXIT=$?
+else
+    status_add "$RED" "Error: no container runtime is available."
+    status_add "$YELLOW" "Install podman or docker before continuing."
+    status_pause
+    exit 1
+fi
+
+if [[ $LOAD_EXIT -ne 0 ]]; then
+    status_add "$RED" "Error: failed to load bootstrap image (exit ${LOAD_EXIT})."
+    status_add "$YELLOW" "Verify the .tar file and ${CONTAINER_RUNTIME} runtime."
+    status_pause
+    exit 1
+fi
+status_add "$GREEN" "Konvoy bootstrap image loaded successfully."
+
+# ============================================================
+# DEPLOYMENT
+# ============================================================
+DEPLOY_LOG=$(mktemp)
+DEPLOY_COMMAND=(
+    nkp create cluster nutanix
+    --bundle "${KOMMANDER_BUNDLE},${KONVOY_BUNDLE}"
+    --cluster-name "${CLUSTER_NAME}"
+    --endpoint "${NUTANIX_ENDPOINT}"
+    --insecure
+    --control-plane-prism-element-cluster "${AHV_CLUSTER}"
+    --worker-prism-element-cluster "${AHV_CLUSTER}"
+    --control-plane-subnets "${NETWORK}"
+    --worker-subnets "${NETWORK}"
+    --vm-image "${VM_IMAGE}"
+    --control-plane-endpoint-ip "${VIP}"
+    --csi-storage-container "${STORAGE}"
+    --kubernetes-service-load-balancer-ip-range "${LB_RANGE}"
+    --kubernetes-pod-network-cidr "100.64.0.0/14"
+    --kubernetes-service-cidr "100.68.0.0/16"
+    --control-plane-replicas "$CP_REPLICAS"
+    --worker-replicas "$WORKER_REPLICAS"
+    --ssh-username "nutanix"
+    --ssh-public-key-file "${SSH_PUBLIC_KEY_FILE}"
+    --timeout "60m0s"
+    --self-managed
+)
+
+"${DEPLOY_COMMAND[@]}" >"$DEPLOY_LOG" 2>&1 &
+NKP_PID=$!
+DEPLOY_SCROLL_OFFSET=0
+DEPLOY_SCROLL_FOLLOW=1
+DEPLOY_CANCELLED=0
+DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || exit 1
+stty -echo -icanon min 0 time 0 < /dev/tty
+exec 3<>/dev/tty
+tui_enable_mouse
+DEPLOY_LIVE=1
+DEPLOY_LOG_SIGNATURE=""
+DEPLOY_RENDER_NEEDED=1
+while deployment_process_running "$NKP_PID"; do
+    frame_setup
+    DEPLOY_KEY=""
+    if IFS= read -r -s -n 1 -t 0.10 -u 3 DEPLOY_KEY; then
+        [[ -z "$DEPLOY_KEY" ]] && DEPLOY_KEY=$'\n'
+    fi
+    if [[ -n "$DEPLOY_KEY" ]]; then
+        # Input handlers need the current line count, but do not redraw
+        # until the complete input sequence has been consumed.
+        load_deployment_output "$DEPLOY_LOG"
+        deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
+        DEPLOY_RENDER_NEEDED=1
+    fi
+    if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
+        kill "$NKP_PID" 2>/dev/null || true
+        break
+    fi
+    DEPLOY_NEW_SIGNATURE=$(deployment_log_signature "$DEPLOY_LOG")
+    if [[ "$DEPLOY_RENDER_NEEDED" == 1 ||
+          "$DEPLOY_NEW_SIGNATURE" != "$DEPLOY_LOG_SIGNATURE" ||
+          "${DEPLOYMENT_SCREEN_COLS:-}" != "$SCREEN_COLS" ||
+          "${DEPLOYMENT_SCREEN_ROWS:-}" != "$SCREEN_ROWS" ]]; then
+        render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End follow   Ctrl-C exit"
+        DEPLOY_LOG_SIGNATURE="$DEPLOY_NEW_SIGNATURE"
+        DEPLOY_RENDER_NEEDED=0
+    fi
+done
+tui_disable_mouse
+stty "$DEPLOY_TTY_STATE" < /dev/tty
+exec 3>&-
+wait "$NKP_PID"
 NKP_EXIT=$?
+NKP_PID=""
+DEPLOY_LIVE=0
+if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
+    exit 130
+fi
+load_deployment_output "$DEPLOY_LOG"
+capture_dashboard_success
+deployment_review "$DEPLOY_LOG" "Deployment result"
 
 if [[ $NKP_EXIT -eq 0 ]]; then
-    echo -e "${GREEN}Deployment finished successfully.${NC}"
-    echo -e "${CYAN}Access your cluster with:${NC}"
-    echo -e "  export KUBECONFIG=${KUBECONFIG}"
+    if [[ -z "$DEPLOY_DASHBOARD_DETAILS" ]]; then
+        DEPLOY_DASHBOARD_DETAILS="Cluster was created successfully!\n\nnkp get dashboard"
+    fi
+    show_message "Deployment finished successfully.\n\n${DEPLOY_DASHBOARD_DETAILS}\n\nKubeconfig:\n${KUBECONFIG}\n\nRun:\nexport KUBECONFIG=${KUBECONFIG}"
+    rm -f "$DEPLOY_LOG"
 else
-    echo -e "${RED}=======================================================${NC}"
-    echo -e "${RED}ERROR: Deployment failed (exit code ${NKP_EXIT}).${NC}"
-    echo -e "${YELLOW}Your inputs have been saved to: ${DEFAULTS_FILE}${NC}"
-    echo -e "${YELLOW}Re-run nkpDeploy.sh to retry with the same defaults.${NC}"
-    echo -e "${RED}=======================================================${NC}"
+    show_message "Deployment failed (exit code ${NKP_EXIT}).\n\nYour inputs were saved to:\n${DEFAULTS_FILE}\n\nRe-run nkpDeploy.sh to retry with the same defaults."
+    rm -f "$DEPLOY_LOG"
     exit 1
 fi
