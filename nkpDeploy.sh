@@ -11,9 +11,10 @@ NC='\033[0m'
 TUI_ALT_SCREEN_ACTIVE=0
 
 tui_enable_mouse() {
-    # SGR mouse mode lets the deployment log receive wheel events without
-    # changing the terminal's visible layout.
-    printf '\033[?1000h\033[?1002h\033[?1006h' >&2
+    # Button tracking is enough for wheel events.  Motion tracking generates
+    # a large stream of packets while the pointer moves and can starve the
+    # deployment input loop over SSH/tmux.
+    printf '\033[?1000h\033[?1006h' >&2
 }
 
 tui_disable_mouse() {
@@ -697,6 +698,15 @@ load_deployment_output() {
     )
 }
 
+deployment_log_signature() {
+    local LOG_FILE="$1"
+    if [[ -f "$LOG_FILE" ]]; then
+        stat -c '%s:%Y' "$LOG_FILE" 2>/dev/null || wc -c < "$LOG_FILE"
+    else
+        printf '0:0'
+    fi
+}
+
 deployment_scroll_up() {
     local CONTENT_ROWS="$1"
     local STEP="${2:-1}"
@@ -733,7 +743,17 @@ deployment_handle_mouse_button() {
     # treating horizontal wheel events as vertical scrolling.
     case $(((BUTTON - 64) % 4)) in
         0) deployment_scroll_up "$CONTENT_ROWS" 3 ;;
-        1) deployment_scroll_down "$CONTENT_ROWS" 3 ;;
+        1)
+            # While NKP is live, returning to the live tail is more useful
+            # than chasing a moving end of file.  Once complete, wheel-down
+            # remains an ordinary incremental scroll operation.
+            if [[ "${DEPLOY_LIVE:-0}" == 1 && "${DEPLOY_SCROLL_FOLLOW:-1}" != 1 ]]; then
+                DEPLOY_SCROLL_FOLLOW=1
+                DEPLOY_SCROLL_OFFSET=0
+            else
+                deployment_scroll_down "$CONTENT_ROWS" 3
+            fi
+            ;;
     esac
 }
 
@@ -747,7 +767,10 @@ deployment_handle_key() {
     READ_TIMEOUT=0.5
     (( MAX_START < 0 )) && MAX_START=0
 
-    [[ -z "$KEY" ]] && return 0
+    # Bash may report Enter as an empty variable when read is operating in
+    # non-canonical mode.  A timed read is filtered by the callers, so an
+    # empty key reaching this handler is an actual Enter press.
+    [[ -z "$KEY" ]] && KEY=$'\n'
     case "$KEY" in
         $'\x1b')
             # SGR mouse wheel events arrive as ESC [ < button ; x ; y M.
@@ -781,14 +804,28 @@ deployment_handle_key() {
                     fi
                     return 0
                 fi
-                IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY4 || true
-                KEY2="${KEY2}${KEY3}${KEY4}"
+                KEY2="${KEY2}${KEY3}"
+                # Simple arrows and Home/End terminate at KEY3.  Only
+                # numeric CSI sequences (PageUp/PageDown and tilde forms)
+                # need additional bytes; do not consume the next key while
+                # waiting for an optional fourth byte.
+                if [[ "$KEY3" =~ [0-9] ]]; then
+                    while IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY4; do
+                        KEY2="${KEY2}${KEY4}"
+                        [[ "$KEY4" =~ [@-~] ]] && break
+                    done
+                fi
+            elif [[ "$KEY2" == "O" ]]; then
+                # Application-cursor mode uses SS3 sequences (ESC O A/B)
+                # instead of CSI sequences (ESC [ A/B).
+                IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY3 || true
+                KEY2="${KEY2}${KEY3}"
             fi
             case "${KEY}${KEY2}" in
-                $'\x1b[A'|$'\x1b[H'|$'\x1b[1~')
+                $'\x1b[A'|$'\x1bOA'|$'\x1b[H'|$'\x1bOH'|$'\x1b[1~')
                     deployment_scroll_up "$CONTENT_ROWS" 1
                     ;;
-                $'\x1b[B')
+                $'\x1b[B'|$'\x1bOB')
                     deployment_scroll_down "$CONTENT_ROWS" 1
                     ;;
                 $'\x1b[5~')
@@ -807,7 +844,7 @@ deployment_handle_key() {
                         DEPLOY_SCROLL_OFFSET=0
                     fi
                     ;;
-                $'\x1b[F'|$'\x1b[4~')
+                $'\x1b[F'|$'\x1bOF'|$'\x1b[4~')
                     DEPLOY_SCROLL_FOLLOW=1
                     DEPLOY_SCROLL_OFFSET=0
                     ;;
@@ -829,21 +866,35 @@ render_deployment_output() {
     local FOOTER="$3"
     local CONTENT_ROWS
     local LINE COLOR
-    local START END TOTAL INDEX
+    local START END TOTAL INDEX ROW
+    local BUFFER=""
+    local CLEAR_SCREEN=""
+    local PURPLE='\033[38;5;141m'
+    local RESET='\033[0m'
 
     frame_setup
     if [[ "${DEPLOYMENT_SCREEN_INITIALIZED:-0}" != 1 ||
           "${DEPLOYMENT_SCREEN_COLS:-}" != "$SCREEN_COLS" ||
           "${DEPLOYMENT_SCREEN_ROWS:-}" != "$SCREEN_ROWS" ]]; then
-        frame_header "$TITLE"
+        CLEAR_SCREEN=$'\033[3J\033[2J'
         DEPLOYMENT_SCREEN_INITIALIZED=1
         DEPLOYMENT_SCREEN_COLS="$SCREEN_COLS"
         DEPLOYMENT_SCREEN_ROWS="$SCREEN_ROWS"
-    else
-        printf '\033[3;1H' >&2
-        frame_row "  $TITLE"
     fi
-    printf '\033[5;1H' >&2
+
+    # Build the entire deployment frame before writing it.  Every row is
+    # addressed absolutely and no row emits a newline, so NKP output cannot
+    # move the terminal cursor past the frame or scroll the real terminal.
+    BUFFER+="$CLEAR_SCREEN"$'\033[?7l\033[?25l'
+    printf -v LINE '%b╭%s╮%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033[1;1H\033[2K'"$LINE"
+    printf -v LINE '%b│%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "  NKP DEPLOYMENT" "$SCREEN_COLS" "$PURPLE" "$RESET"
+    BUFFER+=$'\033[2;1H\033[2K'"$LINE"
+    printf -v LINE '%b│%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "  $TITLE" "$SCREEN_COLS" "$PURPLE" "$RESET"
+    BUFFER+=$'\033[3;1H\033[2K'"$LINE"
+    printf -v LINE '%b├%s┤%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033[4;1H\033[2K'"$LINE"
+
     CONTENT_ROWS=$((SCREEN_ROWS - 7))
     load_deployment_output "$LOG_FILE"
     TOTAL=${#DEPLOY_LOG_LINES[@]}
@@ -858,6 +909,7 @@ render_deployment_output() {
     END=$((START + CONTENT_ROWS))
     (( END > TOTAL )) && END=$TOTAL
 
+    ROW=5
     for ((INDEX=START; INDEX<END; INDEX++)); do
         LINE="${DEPLOY_LOG_LINES[$INDEX]}"
         case "${LINE,,}" in
@@ -866,12 +918,24 @@ render_deployment_output() {
             *complete*|*success*) COLOR="$GREEN" ;;
             *) COLOR="$CYAN" ;;
         esac
-        frame_row_color "$COLOR" "  $LINE"
+        (( ${#LINE} > SCREEN_INNER - 2 )) && LINE="${LINE:0:SCREEN_INNER-5}..."
+        printf -v LINE '%b│%b%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "$COLOR" "  $LINE" "$SCREEN_COLS" "$PURPLE" "$RESET"
+        BUFFER+=$'\033['"${ROW}"$';1H\033[2K'"$LINE"
+        ROW=$((ROW + 1))
     done
     for ((INDEX=END-START; INDEX<CONTENT_ROWS; INDEX++)); do
-        frame_row ""
+        printf -v LINE '%b│%b\033[%dG%b│%b' "$PURPLE" "$RESET" "$SCREEN_COLS" "$PURPLE" "$RESET"
+        BUFFER+=$'\033['"${ROW}"$';1H\033[2K'"$LINE"
+        ROW=$((ROW + 1))
     done
-    frame_footer "$FOOTER"
+
+    printf -v LINE '%b├%s┤%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033['"$((SCREEN_ROWS - 2))"$';1H\033[2K'"$LINE"
+    printf -v LINE '%b│%b%s\033[%dG%b│%b' "$PURPLE" "$RESET" "  Controls: $FOOTER" "$SCREEN_COLS" "$PURPLE" "$RESET"
+    BUFFER+=$'\033['"$((SCREEN_ROWS - 1))"$';1H\033[2K'"$LINE"
+    printf -v LINE '%b╰%s╯%b' "$PURPLE" "$FRAME_LINE" "$RESET"
+    BUFFER+=$'\033['"$SCREEN_ROWS"$';1H\033[2K'"$LINE"$'\033[1;1H'
+    printf '%s' "$BUFFER" >&2
 }
 
 deployment_review() {
@@ -887,7 +951,6 @@ deployment_review() {
     tui_enable_mouse
     while [[ "$DEPLOY_REVIEW_DONE" != 1 ]]; do
         frame_setup
-        tui_enable_mouse
         CONTENT_ROWS=$((SCREEN_ROWS - 7))
         render_deployment_output "$TITLE" "$LOG_FILE" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End   Enter continue"
         IFS= read -r -s -n 1 -u 3 KEY
@@ -919,69 +982,6 @@ capture_dashboard_success() {
         fi
     done
 }
-
-run_deployment_ui_test() {
-    DEPLOY_LOG=$(mktemp)
-    DEPLOYMENT_SCREEN_INITIALIZED=0
-    DEPLOY_SCROLL_OFFSET=0
-    DEPLOY_SCROLL_FOLLOW=1
-    DEPLOY_CANCELLED=0
-
-    # Generate enough output to exercise scrolling without contacting NKP,
-    # Prism Central, or creating any cluster resources.
-    (
-        trap 'exit 130' INT TERM
-        for ((INDEX=1; INDEX<=320; INDEX++)); do
-            printf 'UI test log line %03d - simulated NKP progress output\n' "$INDEX"
-            sleep 0.05
-        done
-        printf 'Cluster was created successfully! Get the dashboard details with:\n'
-        printf 'nkp get dashboard\n'
-    ) >"$DEPLOY_LOG" 2>&1 &
-    NKP_PID=$!
-
-    DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || return 1
-    stty -echo -icanon min 0 time 0 < /dev/tty
-    exec 3<>/dev/tty
-    tui_enable_mouse
-    while deployment_process_running "$NKP_PID"; do
-        frame_setup
-        tui_enable_mouse
-        load_deployment_output "$DEPLOY_LOG"
-        DEPLOY_KEY=""
-        IFS= read -r -s -n 1 -t 0.05 -u 3 DEPLOY_KEY || true
-        deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
-        if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
-            kill "$NKP_PID" 2>/dev/null || true
-            break
-        fi
-        render_deployment_output "Deployment UI test" "$DEPLOY_LOG" "↑/↓/mouse scroll   Ctrl-C cancel"
-        sleep 0.25
-    done
-    tui_disable_mouse
-    stty "$DEPLOY_TTY_STATE" < /dev/tty
-    exec 3>&-
-    wait "$NKP_PID" 2>/dev/null || true
-    NKP_PID=""
-
-    if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
-        return 130
-    fi
-
-    load_deployment_output "$DEPLOY_LOG"
-    capture_dashboard_success
-    deployment_review "$DEPLOY_LOG" "Deployment UI test result"
-    [[ "$DEPLOY_CANCELLED" == 1 ]] && return 130
-    show_message "UI test completed.\n\n${DEPLOY_DASHBOARD_DETAILS:-No completion text captured.}"
-    rm -f "$DEPLOY_LOG"
-    DEPLOY_LOG=""
-    return 0
-}
-
-if [[ "${1:-}" == "--ui-test" ]]; then
-    run_deployment_ui_test
-    exit $?
-fi
 
 # ============================================================
 # DEPENDENCY CHECK
@@ -1931,19 +1931,35 @@ DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || exit 1
 stty -echo -icanon min 0 time 0 < /dev/tty
 exec 3<>/dev/tty
 tui_enable_mouse
+DEPLOY_LIVE=1
+DEPLOY_LOG_SIGNATURE=""
+DEPLOY_RENDER_NEEDED=1
 while deployment_process_running "$NKP_PID"; do
     frame_setup
-    tui_enable_mouse
-    load_deployment_output "$DEPLOY_LOG"
     DEPLOY_KEY=""
-    IFS= read -r -s -n 1 -t 0.05 -u 3 DEPLOY_KEY || true
-    deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
+    if IFS= read -r -s -n 1 -t 0.10 -u 3 DEPLOY_KEY; then
+        [[ -z "$DEPLOY_KEY" ]] && DEPLOY_KEY=$'\n'
+    fi
+    if [[ -n "$DEPLOY_KEY" ]]; then
+        # Input handlers need the current line count, but do not redraw
+        # until the complete input sequence has been consumed.
+        load_deployment_output "$DEPLOY_LOG"
+        deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
+        DEPLOY_RENDER_NEEDED=1
+    fi
     if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
         kill "$NKP_PID" 2>/dev/null || true
         break
     fi
-    render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End follow   Ctrl-C exit"
-    sleep 0.25
+    DEPLOY_NEW_SIGNATURE=$(deployment_log_signature "$DEPLOY_LOG")
+    if [[ "$DEPLOY_RENDER_NEEDED" == 1 ||
+          "$DEPLOY_NEW_SIGNATURE" != "$DEPLOY_LOG_SIGNATURE" ||
+          "${DEPLOYMENT_SCREEN_COLS:-}" != "$SCREEN_COLS" ||
+          "${DEPLOYMENT_SCREEN_ROWS:-}" != "$SCREEN_ROWS" ]]; then
+        render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End follow   Ctrl-C exit"
+        DEPLOY_LOG_SIGNATURE="$DEPLOY_NEW_SIGNATURE"
+        DEPLOY_RENDER_NEEDED=0
+    fi
 done
 tui_disable_mouse
 stty "$DEPLOY_TTY_STATE" < /dev/tty
@@ -1951,6 +1967,7 @@ exec 3>&-
 wait "$NKP_PID"
 NKP_EXIT=$?
 NKP_PID=""
+DEPLOY_LIVE=0
 if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
     exit 130
 fi
