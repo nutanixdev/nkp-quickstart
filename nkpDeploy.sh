@@ -13,13 +13,6 @@ TUI_ALT_SCREEN_ACTIVE=0
 tui_enable_mouse() {
     # SGR mouse mode lets the deployment log receive wheel events without
     # changing the terminal's visible layout.
-    # Inside tmux, tmux owns the wheel and translates it to arrow keys.
-    if [[ -n "${TMUX:-}" ]]; then
-        # Clear any mouse mode left behind by an earlier run so raw SGR
-        # sequences cannot leak into the shell after Ctrl-C.
-        printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' >&2
-        return 0
-    fi
     printf '\033[?1000h\033[?1002h\033[?1006h' >&2
 }
 
@@ -33,11 +26,11 @@ tui_configure_tmux_mouse() {
     local SESSION
     SESSION=$(tmux display-message -p '#S' 2>/dev/null) || return 0
     [[ -n "$SESSION" ]] || return 0
-    # Let tmux own the wheel and translate it into ordinary arrow keys. This
-    # is more reliable through SSH than forwarding terminal mouse protocols.
-    tmux set-option -t "$SESSION" mouse on 2>/dev/null || true
-    tmux bind-key -n WheelUpPane send-keys -t '{mouse}' Up 2>/dev/null || true
-    tmux bind-key -n WheelDownPane send-keys -t '{mouse}' Down 2>/dev/null || true
+    # Let the application receive the terminal's mouse packets directly.
+    tmux set-option -t "$SESSION" mouse off 2>/dev/null || true
+    # Remove bindings from the earlier tmux pass-through experiment.
+    tmux unbind-key -n WheelUpPane 2>/dev/null || true
+    tmux unbind-key -n WheelDownPane 2>/dev/null || true
 }
 
 tui_enter_screen() {
@@ -91,10 +84,10 @@ if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
     tmux set-option -t "$NKP_TMUX_SESSION" status-right ' %H:%M '
     tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-style 'bg=colour141,fg=colour255'
     tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-current-style 'bg=colour141,fg=colour255,bold'
-    # Let tmux translate wheel events into arrow keys for the application.
-    tmux set-option -t "$NKP_TMUX_SESSION" mouse on
-    tmux bind-key -n WheelUpPane send-keys -t '{mouse}' Up 2>/dev/null || true
-    tmux bind-key -n WheelDownPane send-keys -t '{mouse}' Down 2>/dev/null || true
+    # Let the application receive the terminal's mouse packets directly.
+    tmux set-option -t "$NKP_TMUX_SESSION" mouse off
+    tmux unbind-key -n WheelUpPane 2>/dev/null || true
+    tmux unbind-key -n WheelDownPane 2>/dev/null || true
     exec tmux attach-session -t "$NKP_TMUX_SESSION"
 fi
 
@@ -693,15 +686,14 @@ status_pause() {
 load_deployment_output() {
     local LOG_FILE="$1"
     DEPLOY_LOG_LINES=()
-    while IFS= read -r DEPLOY_LINE; do
+    while IFS= read -r DEPLOY_LINE || [[ -n "$DEPLOY_LINE" ]]; do
         [[ -n "$DEPLOY_LINE" ]] && DEPLOY_LOG_LINES+=("$DEPLOY_LINE")
     done < <(
         sed -E \
             -e 's/\x1B\][^\x07]*\x07//g' \
             -e 's/\x1B\[[0-9;:<>?]*[ -/]*[@-~]//g' \
             -e 's/\x1B[0-9A-Za-z]//g' \
-            -e 's/\r//g' \
-        "$LOG_FILE" | tr -d '\000-\010\013\014\016-\037\177'
+        "$LOG_FILE" | tr '\r' '\n' | tr -d '\000-\010\013\014\016-\037\177'
     )
 }
 
@@ -750,8 +742,9 @@ deployment_handle_key() {
     local CONTENT_ROWS="$2"
     local TOTAL=${#DEPLOY_LOG_LINES[@]}
     local MAX_START=$((TOTAL - CONTENT_ROWS))
-    local KEY2 KEY3 KEY4 MOUSE_DATA MOUSE_CHAR BUTTON
+    local KEY2 KEY3 KEY4 MOUSE_DATA MOUSE_CHAR BUTTON READ_TIMEOUT
     local MOUSE_BUTTON MOUSE_X MOUSE_Y BUTTON_CODE
+    READ_TIMEOUT=0.5
     (( MAX_START < 0 )) && MAX_START=0
 
     [[ -z "$KEY" ]] && return 0
@@ -760,12 +753,12 @@ deployment_handle_key() {
             # SGR mouse wheel events arrive as ESC [ < button ; x ; y M.
             # Read the introducer separately so normal cursor keys continue
             # to work while the mouse sequence can be consumed completely.
-            IFS= read -r -s -n 1 -t 0.05 -u 3 KEY2 || true
+            IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY2 || true
             if [[ "$KEY2" == "[" ]]; then
-                IFS= read -r -s -n 1 -t 0.05 -u 3 KEY3 || true
+                IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY3 || true
                 if [[ "$KEY3" == "<" ]]; then
                     MOUSE_DATA=""
-                    while IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_CHAR; do
+                    while IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_CHAR; do
                         [[ "$MOUSE_CHAR" == "M" || "$MOUSE_CHAR" == "m" ]] && break
                         MOUSE_DATA+="$MOUSE_CHAR"
                     done
@@ -776,9 +769,9 @@ deployment_handle_key() {
                     # Older terminals and some tmux/SSH combinations use the
                     # X10 format: ESC [ M button x y. Wheel values are sent
                     # as ASCII 32 + 64/65.
-                    IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_BUTTON || true
-                    IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_X || true
-                    IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_Y || true
+                    IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_BUTTON || true
+                    IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_X || true
+                    IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 MOUSE_Y || true
                     if [[ -n "$MOUSE_BUTTON" ]]; then
                         LC_ALL=C printf -v BUTTON_CODE '%d' "'$MOUSE_BUTTON"
                         if [[ "$BUTTON_CODE" =~ ^[0-9]+$ ]]; then
@@ -788,7 +781,7 @@ deployment_handle_key() {
                     fi
                     return 0
                 fi
-                IFS= read -r -s -n 1 -t 0.05 -u 3 KEY4 || true
+                IFS= read -r -s -n 1 -t "$READ_TIMEOUT" -u 3 KEY4 || true
                 KEY2="${KEY2}${KEY3}${KEY4}"
             fi
             case "${KEY}${KEY2}" in
