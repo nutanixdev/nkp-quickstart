@@ -25,10 +25,12 @@ tui_configure_tmux_mouse() {
     command -v tmux >/dev/null 2>&1 || return 0
     local SESSION
     SESSION=$(tmux display-message -p '#S' 2>/dev/null) || return 0
-    [[ -n "$SESSION" ]] && tmux set-option -t "$SESSION" mouse off 2>/dev/null || true
-    # Remove the temporary pass-through bindings from earlier versions.
-    tmux unbind-key -n WheelUpPane 2>/dev/null || true
-    tmux unbind-key -n WheelDownPane 2>/dev/null || true
+    [[ -n "$SESSION" ]] || return 0
+    # Let tmux own the wheel and translate it into ordinary arrow keys. This
+    # is more reliable through SSH than forwarding terminal mouse protocols.
+    tmux set-option -t "$SESSION" mouse on 2>/dev/null || true
+    tmux bind-key -n WheelUpPane send-keys -t = Up 2>/dev/null || true
+    tmux bind-key -n WheelDownPane send-keys -t = Down 2>/dev/null || true
 }
 
 tui_enter_screen() {
@@ -82,11 +84,10 @@ if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
     tmux set-option -t "$NKP_TMUX_SESSION" status-right ' %H:%M '
     tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-style 'bg=colour141,fg=colour255'
     tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-current-style 'bg=colour141,fg=colour255,bold'
-    # Let the application receive mouse-wheel sequences instead of tmux
-    # consuming them for pane scrolling.
-    tmux set-option -t "$NKP_TMUX_SESSION" mouse off
-    tmux unbind-key -n WheelUpPane 2>/dev/null || true
-    tmux unbind-key -n WheelDownPane 2>/dev/null || true
+    # Let tmux translate wheel events into arrow keys for the application.
+    tmux set-option -t "$NKP_TMUX_SESSION" mouse on
+    tmux bind-key -n WheelUpPane send-keys -t = Up 2>/dev/null || true
+    tmux bind-key -n WheelDownPane send-keys -t = Down 2>/dev/null || true
     exec tmux attach-session -t "$NKP_TMUX_SESSION"
 fi
 
@@ -785,10 +786,10 @@ deployment_handle_key() {
             fi
             case "${KEY}${KEY2}" in
                 $'\x1b[A'|$'\x1b[H'|$'\x1b[1~')
-                    deployment_scroll_up 1
+                    deployment_scroll_up "$CONTENT_ROWS" 1
                     ;;
                 $'\x1b[B')
-                    deployment_scroll_down 1
+                    deployment_scroll_down "$CONTENT_ROWS" 1
                     ;;
                 $'\x1b[5~')
                     if [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]]; then
@@ -918,6 +919,69 @@ capture_dashboard_success() {
         fi
     done
 }
+
+run_deployment_ui_test() {
+    DEPLOY_LOG=$(mktemp)
+    DEPLOYMENT_SCREEN_INITIALIZED=0
+    DEPLOY_SCROLL_OFFSET=0
+    DEPLOY_SCROLL_FOLLOW=1
+    DEPLOY_CANCELLED=0
+
+    # Generate enough output to exercise scrolling without contacting NKP,
+    # Prism Central, or creating any cluster resources.
+    (
+        trap 'exit 130' INT TERM
+        for ((INDEX=1; INDEX<=320; INDEX++)); do
+            printf 'UI test log line %03d - simulated NKP progress output\n' "$INDEX"
+            sleep 0.05
+        done
+        printf 'Cluster was created successfully! Get the dashboard details with:\n'
+        printf 'nkp get dashboard\n'
+    ) >"$DEPLOY_LOG" 2>&1 &
+    NKP_PID=$!
+
+    DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || return 1
+    stty -echo -icanon min 0 time 0 < /dev/tty
+    exec 3<>/dev/tty
+    tui_enable_mouse
+    while deployment_process_running "$NKP_PID"; do
+        frame_setup
+        tui_enable_mouse
+        load_deployment_output "$DEPLOY_LOG"
+        DEPLOY_KEY=""
+        IFS= read -r -s -n 1 -t 0.05 -u 3 DEPLOY_KEY || true
+        deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
+        if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
+            kill "$NKP_PID" 2>/dev/null || true
+            break
+        fi
+        render_deployment_output "Deployment UI test" "$DEPLOY_LOG" "↑/↓/mouse scroll   Ctrl-C cancel"
+        sleep 0.25
+    done
+    tui_disable_mouse
+    stty "$DEPLOY_TTY_STATE" < /dev/tty
+    exec 3>&-
+    wait "$NKP_PID" 2>/dev/null || true
+    NKP_PID=""
+
+    if [[ "$DEPLOY_CANCELLED" == 1 ]]; then
+        return 130
+    fi
+
+    load_deployment_output "$DEPLOY_LOG"
+    capture_dashboard_success
+    deployment_review "$DEPLOY_LOG" "Deployment UI test result"
+    [[ "$DEPLOY_CANCELLED" == 1 ]] && return 130
+    show_message "UI test completed.\n\n${DEPLOY_DASHBOARD_DETAILS:-No completion text captured.}"
+    rm -f "$DEPLOY_LOG"
+    DEPLOY_LOG=""
+    return 0
+}
+
+if [[ "${1:-}" == "--ui-test" ]]; then
+    run_deployment_ui_test
+    exit $?
+fi
 
 # ============================================================
 # DEPENDENCY CHECK
