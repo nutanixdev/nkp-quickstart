@@ -13,11 +13,19 @@ TUI_ALT_SCREEN_ACTIVE=0
 tui_enable_mouse() {
     # SGR mouse mode lets the deployment log receive wheel events without
     # changing the terminal's visible layout.
-    printf '\033[?1000h\033[?1006h' >&2
+    printf '\033[?1000h\033[?1002h\033[?1006h' >&2
 }
 
 tui_disable_mouse() {
     printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' >&2
+}
+
+tui_configure_tmux_mouse() {
+    [[ -z "${TMUX:-}" ]] && return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    local SESSION
+    SESSION=$(tmux display-message -p '#S' 2>/dev/null) || return 0
+    [[ -n "$SESSION" ]] && tmux set-option -t "$SESSION" mouse off 2>/dev/null || true
 }
 
 tui_enter_screen() {
@@ -76,6 +84,10 @@ if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
     tmux set-option -t "$NKP_TMUX_SESSION" mouse off
     exec tmux attach-session -t "$NKP_TMUX_SESSION"
 fi
+
+# Apply this again from inside an already-attached session. This matters when
+# the script is re-run after the tmux session was created by an older version.
+tui_configure_tmux_mouse
 
 # ============================================================
 # HELPER: Inline v4 API call
@@ -837,6 +849,7 @@ deployment_review() {
     tui_enable_mouse
     while [[ "$DEPLOY_REVIEW_DONE" != 1 ]]; do
         frame_setup
+        tui_enable_mouse
         CONTENT_ROWS=$((SCREEN_ROWS - 7))
         render_deployment_output "$TITLE" "$LOG_FILE" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End   Enter continue"
         IFS= read -r -s -n 1 -u 3 KEY
@@ -1796,6 +1809,7 @@ exec 3<>/dev/tty
 tui_enable_mouse
 while kill -0 "$NKP_PID" 2>/dev/null; do
     frame_setup
+    tui_enable_mouse
     load_deployment_output "$DEPLOY_LOG"
     DEPLOY_KEY=""
     IFS= read -r -s -n 1 -t 0.05 -u 3 DEPLOY_KEY || true
