@@ -10,6 +10,16 @@ YELLOW="$PURPLE"
 NC='\033[0m'
 TUI_ALT_SCREEN_ACTIVE=0
 
+tui_enable_mouse() {
+    # SGR mouse mode lets the deployment log receive wheel events without
+    # changing the terminal's visible layout.
+    printf '\033[?1000h\033[?1006h' >&2
+}
+
+tui_disable_mouse() {
+    printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' >&2
+}
+
 tui_enter_screen() {
     if [[ "$TUI_ALT_SCREEN_ACTIVE" != 1 ]]; then
         printf '\033[?1049h' >&2
@@ -18,6 +28,7 @@ tui_enter_screen() {
 }
 
 tui_restore_terminal() {
+    tui_disable_mouse
     if [[ -c /dev/tty ]]; then
         stty echo icanon < /dev/tty 2>/dev/null || true
     fi
@@ -60,6 +71,9 @@ if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
     tmux set-option -t "$NKP_TMUX_SESSION" status-right ' %H:%M '
     tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-style 'bg=colour141,fg=colour255'
     tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-current-style 'bg=colour141,fg=colour255,bold'
+    # Let the application receive mouse-wheel sequences instead of tmux
+    # consuming them for pane scrolling.
+    tmux set-option -t "$NKP_TMUX_SESSION" mouse off
     exec tmux attach-session -t "$NKP_TMUX_SESSION"
 fi
 
@@ -660,10 +674,35 @@ load_deployment_output() {
             -e 's/\x1B\][^\x07]*\x07//g' \
             -e 's/\x1B\[[0-9;:<>?]*[ -/]*[@-~]//g' \
             -e 's/\x1B[0-9A-Za-z]//g' \
-            -e 's/\x1B[ -/]*[0-~]//g' \
             -e 's/\r//g' \
         "$LOG_FILE" | tr -d '\000-\010\013\014\016-\037\177'
     )
+}
+
+deployment_scroll_up() {
+    local CONTENT_ROWS="$1"
+    local STEP="${2:-1}"
+    local MAX_START=$((${#DEPLOY_LOG_LINES[@]} - CONTENT_ROWS))
+    (( MAX_START < 0 )) && MAX_START=0
+    if [[ "${DEPLOY_SCROLL_FOLLOW:-1}" == 1 ]]; then
+        DEPLOY_SCROLL_OFFSET=$MAX_START
+        DEPLOY_SCROLL_FOLLOW=0
+    fi
+    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET - STEP))
+    (( DEPLOY_SCROLL_OFFSET < 0 )) && DEPLOY_SCROLL_OFFSET=0
+}
+
+deployment_scroll_down() {
+    local CONTENT_ROWS="$1"
+    local STEP="${2:-1}"
+    local MAX_START=$((${#DEPLOY_LOG_LINES[@]} - CONTENT_ROWS))
+    (( MAX_START < 0 )) && MAX_START=0
+    [[ "${DEPLOY_SCROLL_FOLLOW:-1}" == 1 ]] && return 0
+    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET + STEP))
+    if (( DEPLOY_SCROLL_OFFSET >= MAX_START )); then
+        DEPLOY_SCROLL_FOLLOW=1
+        DEPLOY_SCROLL_OFFSET=0
+    fi
 }
 
 deployment_handle_key() {
@@ -671,25 +710,40 @@ deployment_handle_key() {
     local CONTENT_ROWS="$2"
     local TOTAL=${#DEPLOY_LOG_LINES[@]}
     local MAX_START=$((TOTAL - CONTENT_ROWS))
-    local KEY2
+    local KEY2 KEY3 KEY4 MOUSE_DATA MOUSE_CHAR BUTTON
     (( MAX_START < 0 )) && MAX_START=0
 
     [[ -z "$KEY" ]] && return 0
     case "$KEY" in
         $'\x1b')
-            IFS= read -r -s -n 3 -t 0.05 -u 3 KEY2 || true
+            # SGR mouse wheel events arrive as ESC [ < button ; x ; y M.
+            # Read the introducer separately so normal cursor keys continue
+            # to work while the mouse sequence can be consumed completely.
+            IFS= read -r -s -n 1 -t 0.05 -u 3 KEY2 || true
+            if [[ "$KEY2" == "[" ]]; then
+                IFS= read -r -s -n 1 -t 0.05 -u 3 KEY3 || true
+                if [[ "$KEY3" == "<" ]]; then
+                    MOUSE_DATA=""
+                    while IFS= read -r -s -n 1 -t 0.05 -u 3 MOUSE_CHAR; do
+                        [[ "$MOUSE_CHAR" == "M" || "$MOUSE_CHAR" == "m" ]] && break
+                        MOUSE_DATA+="$MOUSE_CHAR"
+                    done
+                    BUTTON="${MOUSE_DATA%%;*}"
+                    case "$BUTTON" in
+                        64) deployment_scroll_up "$CONTENT_ROWS" 3 ;;
+                        65) deployment_scroll_down "$CONTENT_ROWS" 3 ;;
+                    esac
+                    return 0
+                fi
+                IFS= read -r -s -n 1 -t 0.05 -u 3 KEY4 || true
+                KEY2="${KEY2}${KEY3}${KEY4}"
+            fi
             case "${KEY}${KEY2}" in
                 $'\x1b[A'|$'\x1b[H'|$'\x1b[1~')
-                    if [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]]; then
-                        DEPLOY_SCROLL_OFFSET=$MAX_START
-                        DEPLOY_SCROLL_FOLLOW=0
-                    fi
-                    (( DEPLOY_SCROLL_OFFSET > 0 )) && DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET - 1))
+                    deployment_scroll_up 1
                     ;;
                 $'\x1b[B')
-                    [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]] && return 0
-                    DEPLOY_SCROLL_OFFSET=$((DEPLOY_SCROLL_OFFSET + 1))
-                    (( DEPLOY_SCROLL_OFFSET >= MAX_START )) && DEPLOY_SCROLL_FOLLOW=1
+                    deployment_scroll_down 1
                     ;;
                 $'\x1b[5~')
                     if [[ "$DEPLOY_SCROLL_FOLLOW" == 1 ]]; then
@@ -780,13 +834,15 @@ deployment_review() {
     DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || return 1
     stty -echo -icanon min 1 time 0 < /dev/tty || return 1
     exec 3<>/dev/tty
+    tui_enable_mouse
     while [[ "$DEPLOY_REVIEW_DONE" != 1 ]]; do
         frame_setup
         CONTENT_ROWS=$((SCREEN_ROWS - 7))
-        render_deployment_output "$TITLE" "$LOG_FILE" "↑/↓ scroll   PgUp/PgDn page   Home/End   Enter continue"
+        render_deployment_output "$TITLE" "$LOG_FILE" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End   Enter continue"
         IFS= read -r -s -n 1 -u 3 KEY
         deployment_handle_key "$KEY" "$CONTENT_ROWS"
     done
+    tui_disable_mouse
     stty "$DEPLOY_TTY_STATE" < /dev/tty
     exec 3>&-
 }
@@ -1737,15 +1793,17 @@ DEPLOY_SCROLL_FOLLOW=1
 DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || exit 1
 stty -echo -icanon min 0 time 0 < /dev/tty
 exec 3<>/dev/tty
+tui_enable_mouse
 while kill -0 "$NKP_PID" 2>/dev/null; do
     frame_setup
     load_deployment_output "$DEPLOY_LOG"
     DEPLOY_KEY=""
     IFS= read -r -s -n 1 -t 0.05 -u 3 DEPLOY_KEY || true
     deployment_handle_key "$DEPLOY_KEY" "$((SCREEN_ROWS - 7))"
-    render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "↑/↓ scroll   PgUp/PgDn page   Home/End follow   Ctrl-C exit"
+    render_deployment_output "Deploying NKP cluster" "$DEPLOY_LOG" "↑/↓/mouse scroll   PgUp/PgDn page   Home/End follow   Ctrl-C exit"
     sleep 0.25
 done
+tui_disable_mouse
 stty "$DEPLOY_TTY_STATE" < /dev/tty
 exec 3>&-
 wait "$NKP_PID"
