@@ -13,10 +13,13 @@ TUI_ALT_SCREEN_ACTIVE=0
 tui_enable_mouse() {
     # SGR mouse mode lets the deployment log receive wheel events without
     # changing the terminal's visible layout.
+    # Inside tmux, tmux owns the wheel and translates it to arrow keys.
+    [[ -n "${TMUX:-}" ]] && return 0
     printf '\033[?1000h\033[?1002h\033[?1006h' >&2
 }
 
 tui_disable_mouse() {
+    [[ -n "${TMUX:-}" ]] && return 0
     printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' >&2
 }
 
