@@ -51,8 +51,16 @@ COMPATIBILITY_FILE="${SCRIPT_DIR}/nkp_compatibility.json"
 # deployment; the nested process skips this block because TMUX is set.
 NKP_TMUX_SESSION="${NKP_TMUX_SESSION:-nkp-deploy}"
 if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
-    exec tmux new-session -A -s "$NKP_TMUX_SESSION" -c "$SCRIPT_DIR" \
-        "$SCRIPT_DIR/nkpDeploy.sh" "$@"
+    if ! tmux has-session -t "$NKP_TMUX_SESSION" 2>/dev/null; then
+        tmux new-session -d -s "$NKP_TMUX_SESSION" -c "$SCRIPT_DIR" \
+            "$SCRIPT_DIR/nkpDeploy.sh" "$@"
+    fi
+    tmux set-option -t "$NKP_TMUX_SESSION" status-style 'bg=colour141,fg=colour255'
+    tmux set-option -t "$NKP_TMUX_SESSION" status-left '  NKP DEPLOYMENT  '
+    tmux set-option -t "$NKP_TMUX_SESSION" status-right ' %H:%M '
+    tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-style 'bg=colour141,fg=colour255'
+    tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-current-style 'bg=colour141,fg=colour255,bold'
+    exec tmux attach-session -t "$NKP_TMUX_SESSION"
 fi
 
 # ============================================================
@@ -324,7 +332,8 @@ frame_footer() {
     frame_row "  Controls: $CONTROLS"
     # The bottom border occupies the terminal's last row. Do not emit a
     # trailing newline here or the terminal scrolls and hides the top border.
-    printf '\033[2K\033[1G%b╰%s╯%b\033[?7h' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    # Keep line wrapping disabled until tui_restore_terminal runs on exit.
+    printf '\033[2K\033[1G%b╰%s╯%b' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
 }
 
 show_progress() {
@@ -664,7 +673,14 @@ render_deployment_output() {
     CONTENT_ROWS=$((SCREEN_ROWS - 7))
     while IFS= read -r LINE; do
         [[ -n "$LINE" ]] && LOG_LINES+=("$LINE")
-    done < <(tail -n "$CONTENT_ROWS" "$LOG_FILE" | sed -E 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g; s/\r//g')
+    done < <(
+        tail -n "$CONTENT_ROWS" "$LOG_FILE" \
+            | sed -E \
+                -e 's/\x1B\][^\x07]*\x07//g' \
+                -e 's/\x1B\[[0-9;:<>?]*[ -/]*[@-~]//g' \
+                -e 's/\r//g' \
+            | tr -d '\000-\010\013\014\016-\037\177'
+    )
 
     for LINE in "${LOG_LINES[@]}"; do
         case "${LINE,,}" in
