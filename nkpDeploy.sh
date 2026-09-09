@@ -741,10 +741,15 @@ deployment_handle_key() {
                         MOUSE_DATA+="$MOUSE_CHAR"
                     done
                     BUTTON="${MOUSE_DATA%%;*}"
-                    case "$BUTTON" in
-                        64) deployment_scroll_up "$CONTENT_ROWS" 3 ;;
-                        65) deployment_scroll_down "$CONTENT_ROWS" 3 ;;
-                    esac
+                    if [[ "$BUTTON" =~ ^[0-9]+$ ]] && (( BUTTON >= 64 )); then
+                        # Wheel up/down are 64/65. The modulo also accepts
+                        # terminal modifier bits without treating horizontal
+                        # wheel events as vertical scrolling.
+                        case $(((BUTTON - 64) % 4)) in
+                            0) deployment_scroll_up "$CONTENT_ROWS" 3 ;;
+                            1) deployment_scroll_down "$CONTENT_ROWS" 3 ;;
+                        esac
+                    fi
                     return 0
                 fi
                 IFS= read -r -s -n 1 -t 0.05 -u 3 KEY4 || true
