@@ -334,7 +334,7 @@ frame_header() {
     local RESET='\033[0m'
     # 3J clears terminal scrollback so each screen starts as a clean app view.
     tui_enter_screen
-    printf '\033[?7l\033[3J\033[2J\033[H' >&2
+    printf '\033[?7l\033[?25l\033[3J\033[2J\033[H' >&2
     printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
     frame_row_color "$PURPLE" "  NKP DEPLOYMENT"
     frame_row "  $LABEL"
@@ -345,7 +345,7 @@ frame_prompt_header() {
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
     tui_enter_screen
-    printf '\033[?7l\033[3J\033[2J\033[H' >&2
+    printf '\033[?7l\033[?25h\033[3J\033[2J\033[H' >&2
     printf '%b╭%s╮%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
     frame_row_color "$PURPLE" "  NKP DEPLOYMENT"
     printf '%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
@@ -355,7 +355,8 @@ frame_footer() {
     local CONTROLS="$1"
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
-    printf '\033[2K\033[1G%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
+    # Keep the terminal cursor from blinking over the bottom-right border.
+    printf '\033[?25l\033[2K\033[1G%b├%s┤%b\n' "$PURPLE" "$FRAME_LINE" "$RESET" >&2
     frame_row "  Controls: $CONTROLS"
     # The bottom border occupies the terminal's last row. Do not emit a
     # trailing newline here or the terminal scrolls and hides the top border.
@@ -400,7 +401,7 @@ modern_prompt() {
         frame_row ""
     done
     frame_footer "Enter submit   Ctrl-C exit"
-    printf '\033[u' >&2
+    printf '\033[?25h\033[u' >&2
     if [[ "$MASKED" == true ]]; then
         IFS= read -r -s VALUE < /dev/tty
         printf '\n' >&2
