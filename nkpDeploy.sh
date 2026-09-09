@@ -46,6 +46,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULTS_FILE="${SCRIPT_DIR}/nkpDeploy_defaults.json"
 COMPATIBILITY_FILE="${SCRIPT_DIR}/nkp_compatibility.json"
 
+# Keep the interactive deployment alive across SSH disconnects. A rerun from
+# outside tmux attaches to the existing session instead of starting a second
+# deployment; the nested process skips this block because TMUX is set.
+NKP_TMUX_SESSION="${NKP_TMUX_SESSION:-nkp-deploy}"
+if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
+    exec tmux new-session -A -s "$NKP_TMUX_SESSION" -c "$SCRIPT_DIR" \
+        "$SCRIPT_DIR/nkpDeploy.sh" "$@"
+fi
+
 # ============================================================
 # HELPER: Inline v4 API call
 # Requires PCIPADDRESS, PCADMIN, PCPASSWD to be set before calling.
@@ -678,7 +687,7 @@ render_deployment_output() {
 # ============================================================
 status_begin "Checking local prerequisites"
 status_add "$CYAN" "Verifying required dependencies..."
-REQUIRED_COMMANDS=("curl" "jq" "tar")
+REQUIRED_COMMANDS=("curl" "jq" "tar" "tmux")
 MISSING_COMMANDS=()
 for cmd in "${REQUIRED_COMMANDS[@]}"; do
     if command -v "$cmd" &> /dev/null; then

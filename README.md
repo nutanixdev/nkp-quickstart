@@ -124,6 +124,8 @@ This is the guided deployment path for the jump host created from the repository
 
 The application runs directly in the terminal with a full-screen, purple-themed interface. It does not require a separate TUI framework. Arrow keys and Enter are used for selections; text fields, masked password input, and the final Y/N confirmation are handled inside the same bordered interface. Use `Ctrl-C` to exit.
 
+The script automatically runs inside a `tmux` session named `nkp-deploy` (installed by [cloud-init](./cloud-init)). If SSH disconnects, the deployment continues. Running `./nkpDeploy.sh` again attaches to the existing session instead of starting a second deployment. To intentionally discard a stale session, use `tmux kill-session -t nkp-deploy`.
+
 <p align="center">
   <img src="./images/nkp-deployment-progress.png" alt="NKP deployment progress screen" width="800">
 </p>
