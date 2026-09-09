@@ -865,6 +865,28 @@ deployment_review() {
     exec 3>&-
 }
 
+deployment_process_running() {
+    local PID="$1"
+    local STATE
+    kill -0 "$PID" 2>/dev/null || return 1
+    STATE=$(ps -o stat= -p "$PID" 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$STATE" && "$STATE" != Z* ]]
+}
+
+capture_dashboard_success() {
+    local INDEX NEXT
+    DEPLOY_DASHBOARD_DETAILS=""
+    for ((INDEX=0; INDEX<${#DEPLOY_LOG_LINES[@]}; INDEX++)); do
+        if [[ "${DEPLOY_LOG_LINES[$INDEX]}" == *"Cluster was created successfully"* ]]; then
+            DEPLOY_DASHBOARD_DETAILS="${DEPLOY_LOG_LINES[$INDEX]}"
+            for ((NEXT=INDEX+1; NEXT<${#DEPLOY_LOG_LINES[@]} && NEXT<=INDEX+2; NEXT++)); do
+                DEPLOY_DASHBOARD_DETAILS+=$'\n'"${DEPLOY_LOG_LINES[$NEXT]}"
+            done
+            break
+        fi
+    done
+}
+
 # ============================================================
 # DEPENDENCY CHECK
 # ============================================================
@@ -1812,7 +1834,7 @@ DEPLOY_TTY_STATE=$(stty -g < /dev/tty) || exit 1
 stty -echo -icanon min 0 time 0 < /dev/tty
 exec 3<>/dev/tty
 tui_enable_mouse
-while kill -0 "$NKP_PID" 2>/dev/null; do
+while deployment_process_running "$NKP_PID"; do
     frame_setup
     tui_enable_mouse
     load_deployment_output "$DEPLOY_LOG"
@@ -1828,13 +1850,18 @@ exec 3>&-
 wait "$NKP_PID"
 NKP_EXIT=$?
 NKP_PID=""
+load_deployment_output "$DEPLOY_LOG"
+capture_dashboard_success
 deployment_review "$DEPLOY_LOG" "Deployment result"
 
 if [[ $NKP_EXIT -eq 0 ]]; then
+    if [[ -z "$DEPLOY_DASHBOARD_DETAILS" ]]; then
+        DEPLOY_DASHBOARD_DETAILS="Cluster was created successfully!\n\nnkp get dashboard"
+    fi
+    show_message "Deployment finished successfully.\n\n${DEPLOY_DASHBOARD_DETAILS}\n\nKubeconfig:\n${KUBECONFIG}\n\nRun:\nexport KUBECONFIG=${KUBECONFIG}"
     rm -f "$DEPLOY_LOG"
-    show_message "Deployment finished successfully.\n\nKubeconfig:\n${KUBECONFIG}\n\nRun:\nexport KUBECONFIG=${KUBECONFIG}\nnkp get dashboard"
 else
-    rm -f "$DEPLOY_LOG"
     show_message "Deployment failed (exit code ${NKP_EXIT}).\n\nYour inputs were saved to:\n${DEFAULTS_FILE}\n\nRe-run nkpDeploy.sh to retry with the same defaults."
+    rm -f "$DEPLOY_LOG"
     exit 1
 fi
