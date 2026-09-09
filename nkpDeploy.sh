@@ -288,7 +288,8 @@ frame_row() {
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
     (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
-    printf '\033[2K\033[1G%b│%b%-*s%b│%b\n' "$PURPLE" "$RESET" "$SCREEN_INNER" "$TEXT" "$PURPLE" "$RESET" >&2
+    printf '\033[2K\033[1G%b│%b%s\033[%dG%b│%b\n' \
+        "$PURPLE" "$RESET" "$TEXT" "$SCREEN_COLS" "$PURPLE" "$RESET" >&2
 }
 
 frame_row_color() {
@@ -297,8 +298,8 @@ frame_row_color() {
     local PURPLE='\033[38;5;141m'
     local RESET='\033[0m'
     (( ${#TEXT} > SCREEN_INNER )) && TEXT="${TEXT:0:SCREEN_INNER-3}..."
-    printf '\033[2K\033[1G%b│%b%b%-*s%b%b│%b\n' \
-        "$PURPLE" "$RESET" "$COLOR" "$SCREEN_INNER" "$TEXT" "$RESET" "$PURPLE" "$RESET" >&2
+    printf '\033[2K\033[1G%b│%b%b%s\033[%dG%b│%b\n' \
+        "$PURPLE" "$RESET" "$COLOR" "$TEXT" "$SCREEN_COLS" "$PURPLE" "$RESET" >&2
 }
 
 frame_header() {
