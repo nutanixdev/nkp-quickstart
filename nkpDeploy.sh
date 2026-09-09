@@ -14,12 +14,16 @@ tui_enable_mouse() {
     # SGR mouse mode lets the deployment log receive wheel events without
     # changing the terminal's visible layout.
     # Inside tmux, tmux owns the wheel and translates it to arrow keys.
-    [[ -n "${TMUX:-}" ]] && return 0
+    if [[ -n "${TMUX:-}" ]]; then
+        # Clear any mouse mode left behind by an earlier run so raw SGR
+        # sequences cannot leak into the shell after Ctrl-C.
+        printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' >&2
+        return 0
+    fi
     printf '\033[?1000h\033[?1002h\033[?1006h' >&2
 }
 
 tui_disable_mouse() {
-    [[ -n "${TMUX:-}" ]] && return 0
     printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l' >&2
 }
 
@@ -32,8 +36,8 @@ tui_configure_tmux_mouse() {
     # Let tmux own the wheel and translate it into ordinary arrow keys. This
     # is more reliable through SSH than forwarding terminal mouse protocols.
     tmux set-option -t "$SESSION" mouse on 2>/dev/null || true
-    tmux bind-key -n WheelUpPane send-keys -t = Up 2>/dev/null || true
-    tmux bind-key -n WheelDownPane send-keys -t = Down 2>/dev/null || true
+    tmux bind-key -n WheelUpPane send-keys -t '{mouse}' Up 2>/dev/null || true
+    tmux bind-key -n WheelDownPane send-keys -t '{mouse}' Down 2>/dev/null || true
 }
 
 tui_enter_screen() {
@@ -89,8 +93,8 @@ if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v tmux >/dev/null 2>&1; then
     tmux set-window-option -t "$NKP_TMUX_SESSION" window-status-current-style 'bg=colour141,fg=colour255,bold'
     # Let tmux translate wheel events into arrow keys for the application.
     tmux set-option -t "$NKP_TMUX_SESSION" mouse on
-    tmux bind-key -n WheelUpPane send-keys -t = Up 2>/dev/null || true
-    tmux bind-key -n WheelDownPane send-keys -t = Down 2>/dev/null || true
+    tmux bind-key -n WheelUpPane send-keys -t '{mouse}' Up 2>/dev/null || true
+    tmux bind-key -n WheelDownPane send-keys -t '{mouse}' Down 2>/dev/null || true
     exec tmux attach-session -t "$NKP_TMUX_SESSION"
 fi
 
