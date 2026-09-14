@@ -54,6 +54,29 @@ tui_restore_terminal() {
     fi
 }
 
+tui_prepare_sudo() {
+    local TTY_STATE
+    local SUDO_STATUS
+
+    command -v sudo >/dev/null 2>&1 || return 1
+
+    if [[ -c /dev/tty ]]; then
+        TTY_STATE=$(stty -g < /dev/tty) || return 1
+        # The framed renderer intentionally hides the cursor and disables
+        # wrapping.  Restore normal terminal behavior while sudo can prompt,
+        # otherwise its password prompt is effectively invisible.
+        printf '\033[?7h\033[?25h\033[2J\033[H' >&2
+        stty echo icanon < /dev/tty 2>/dev/null || true
+        sudo -v
+        SUDO_STATUS=$?
+        stty "$TTY_STATE" < /dev/tty 2>/dev/null || true
+        printf '\033[?7l\033[?25l' >&2
+        return "$SUDO_STATUS"
+    fi
+
+    sudo -v
+}
+
 tui_cleanup() {
     if [[ -n "${NKP_PID:-}" ]] && kill -0 "$NKP_PID" 2>/dev/null; then
         kill "$NKP_PID" 2>/dev/null || true
@@ -1294,6 +1317,11 @@ if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
 
     if [[ ! -f "$GLOBAL_DELEGATE_CONF" ]]; then
         status_add "$YELLOW" "Podman cgroup v2 delegation is missing; applying the fix..."
+        if ! tui_prepare_sudo; then
+            status_add "$RED" "Error: administrator access is required for the Podman cgroup fix."
+            status_pause
+            exit 1
+        fi
         sudo mkdir -p "$GLOBAL_DELEGATE_DIR" >/dev/null 2>&1
         printf '[Service]\nDelegate=yes\n' | sudo tee "$GLOBAL_DELEGATE_CONF" >/dev/null
         sudo systemctl daemon-reload >/dev/null 2>&1
@@ -1411,9 +1439,18 @@ fi
 # ============================================================
 status_add "$CYAN" "Installing nkp and kubectl to /usr/local/bin..."
 
-if sudo cp "./$TARGET_DIR/cli/nkp" /usr/local/bin/nkp && \
-   sudo cp "./$TARGET_DIR/kubectl" /usr/local/bin/kubectl && \
-   sudo chmod 755 /usr/local/bin/nkp /usr/local/bin/kubectl; then
+if ! tui_prepare_sudo; then
+    status_add "$RED" "Error: administrator access is required to install nkp and kubectl."
+    status_add "$YELLOW" "Enter the local sudo password when prompted, or verify sudo permissions for $(id -un)."
+    status_pause
+    exit 1
+fi
+
+INSTALL_ERROR=$(mktemp)
+if sudo cp "./$TARGET_DIR/cli/nkp" /usr/local/bin/nkp 2>"$INSTALL_ERROR" && \
+   sudo cp "./$TARGET_DIR/kubectl" /usr/local/bin/kubectl 2>>"$INSTALL_ERROR" && \
+   sudo chmod 755 /usr/local/bin/nkp /usr/local/bin/kubectl 2>>"$INSTALL_ERROR"; then
+    rm -f "$INSTALL_ERROR"
     if [[ -x "/usr/local/bin/nkp" ]] && [[ -x "/usr/local/bin/kubectl" ]]; then
         status_add "$GREEN" "NKP tools installed successfully."
     else
@@ -1423,6 +1460,11 @@ if sudo cp "./$TARGET_DIR/cli/nkp" /usr/local/bin/nkp && \
     fi
 else
     status_add "$RED" "Error: failed to install binaries. Check sudo permissions."
+    if [[ -s "$INSTALL_ERROR" ]]; then
+        INSTALL_ERROR_TEXT=$(tr '\n' ' ' < "$INSTALL_ERROR" | cut -c1-360)
+        status_add "$YELLOW" "Details: ${INSTALL_ERROR_TEXT}"
+    fi
+    rm -f "$INSTALL_ERROR"
     status_pause
     exit 1
 fi
