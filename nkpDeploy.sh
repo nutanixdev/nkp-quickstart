@@ -1568,8 +1568,9 @@ if [[ ${#CLUSTER_NAMES[@]} -eq 0 ]]; then
 fi
 
 SELECTED_INDEX=$(select_option "Select the AHV Cluster for the NKP nodes" "${CLUSTER_NAMES[@]}") || exit 1
-AHV_CLUSTER="${CLUSTER_NAMES[$((SELECTED_INDEX - 1))]}"
-AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$((SELECTED_INDEX - 1))]}"
+CLUSTER_INDEX=$((SELECTED_INDEX - 1))
+AHV_CLUSTER="${CLUSTER_NAMES[$CLUSTER_INDEX]}"
+AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$CLUSTER_INDEX]}"
 
 show_progress "Loading networks for ${AHV_CLUSTER}"
 NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0.a1/config/subnets?\$limit=100")
@@ -1585,9 +1586,7 @@ fi
 
 NETWORK_NAMES_ALL=()
 NETWORK_CIDRS_ALL=()
-NETWORK_NAMES_MATCHED=()
-NETWORK_CIDRS_MATCHED=()
-while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_CLUSTER_ID_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM; do
+while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM; do
     [[ -z "$NETWORK_NAME_ITEM" ]] && continue
 
     NETWORK_CIDR_ITEM=""
@@ -1598,29 +1597,19 @@ while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_CLUSTER_ID_ITEM NETWORK_IP_ITE
 
     NETWORK_NAMES_ALL+=("$NETWORK_NAME_ITEM")
     NETWORK_CIDRS_ALL+=("$NETWORK_CIDR_ITEM")
-    if [[ -n "$AHV_CLUSTER_EXT_ID" && "$NETWORK_CLUSTER_ID_ITEM" == "$AHV_CLUSTER_EXT_ID" ]]; then
-        NETWORK_NAMES_MATCHED+=("$NETWORK_NAME_ITEM")
-        NETWORK_CIDRS_MATCHED+=("$NETWORK_CIDR_ITEM")
-    fi
 done < <(echo "$NETWORK_RESPONSE" | jq -r '
     .data[]?
     | [
         (.name // ""),
-        (if (.clusterReference | type) == "object" then (.clusterReference.extId // "") else (.clusterReference // "") end),
         (.ipConfig[0].ipv4.ipSubnet.ip.value // ""),
         (.ipConfig[0].ipv4.ipSubnet.prefixLength // "")
       ]
     | @tsv' 2>/dev/null)
 
-# Some PC versions omit clusterReference from the list response. If there
-# were no exact matches, retain all returned subnets and let the user choose.
-if [[ ${#NETWORK_NAMES_MATCHED[@]} -gt 0 ]]; then
-    NETWORK_NAMES=("${NETWORK_NAMES_MATCHED[@]}")
-    NETWORK_CIDRS=("${NETWORK_CIDRS_MATCHED[@]}")
-else
-    NETWORK_NAMES=("${NETWORK_NAMES_ALL[@]}")
-    NETWORK_CIDRS=("${NETWORK_CIDRS_ALL[@]}")
-fi
+# Use every subnet returned by Prism Central. Some valid CIDR-backed and
+# External IPAM networks do not include clusterReference in the list response.
+NETWORK_NAMES=("${NETWORK_NAMES_ALL[@]}")
+NETWORK_CIDRS=("${NETWORK_CIDRS_ALL[@]}")
 
 if [[ ${#NETWORK_NAMES[@]} -eq 0 ]]; then
     show_message "No AHV networks were returned by Prism Central.\n\nConfirm that the selected AHV cluster has networks visible to this Prism Central account."
@@ -1665,13 +1654,33 @@ if api_failed "$STORAGE_RESPONSE"; then
     exit 1
 fi
 
+if [[ -z "$AHV_CLUSTER_EXT_ID" ]]; then
+    show_message "Prism Central did not return an external ID for ${AHV_CLUSTER}.\n\nThe storage-container list cannot be safely scoped to the selected AHV cluster."
+    exit 1
+fi
+
 STORAGE_NAMES=()
-while IFS= read -r STORAGE_NAME_ITEM; do
+while IFS=$'\t' read -r STORAGE_NAME_ITEM STORAGE_CLUSTER_ID_ITEM STORAGE_CLUSTER_NAME_ITEM; do
     [[ -z "$STORAGE_NAME_ITEM" ]] && continue
-    STORAGE_NAMES+=("$STORAGE_NAME_ITEM")
-done < <(echo "$STORAGE_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sort -fu)
+
+    # The storage-container collection is Prism Central-wide.  Restrict the
+    # selector to containers owned by the AHV cluster selected above.  Some
+    # releases provide clusterExtId, while older responses may only include
+    # clusterName, so use the name only when the ID is absent.
+    if [[ "$STORAGE_CLUSTER_ID_ITEM" == "$AHV_CLUSTER_EXT_ID" ||
+          ( -z "$STORAGE_CLUSTER_ID_ITEM" && "$STORAGE_CLUSTER_NAME_ITEM" == "$AHV_CLUSTER" ) ]]; then
+        STORAGE_NAMES+=("$STORAGE_NAME_ITEM")
+    fi
+done < <(echo "$STORAGE_RESPONSE" | jq -r '
+    .data[]?
+    | [
+        (.name // ""),
+        (.clusterExtId // ""),
+        (.clusterName // "")
+      ]
+    | @tsv' 2>/dev/null | sort -fu)
 if [[ ${#STORAGE_NAMES[@]} -eq 0 ]]; then
-    show_message "No storage containers were returned by Prism Central."
+    show_message "No storage containers were found for ${AHV_CLUSTER}.\n\nPrism Central returned storage containers, but none were associated with the selected AHV cluster."
     exit 1
 fi
 SELECTED_INDEX=$(select_option "Select the storage container for persistent volumes" "${STORAGE_NAMES[@]}") || exit 1
