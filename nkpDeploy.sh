@@ -1065,6 +1065,30 @@ validate_ipv4() {
     (( COUNT == 4 ))
 }
 
+parse_ipv4_cidr() {
+    local CIDR="$1"
+    local NETWORK_IP PREFIX IP_VALUE MASK
+
+    [[ "$CIDR" =~ ^([^/]+)/([0-9]{1,2})$ ]] || return 1
+    NETWORK_IP="${BASH_REMATCH[1]}"
+    PREFIX="${BASH_REMATCH[2]}"
+    validate_ipv4 "$NETWORK_IP" || return 1
+    (( PREFIX <= 32 )) || return 1
+
+    IP_VALUE=$(ip2int "$NETWORK_IP")
+    if (( PREFIX == 0 )); then
+        MASK=0
+    else
+        MASK=$(( (0xFFFFFFFF << (32 - PREFIX)) & 0xFFFFFFFF ))
+    fi
+
+    # Require the entered address to be the network address, not a host IP.
+    (( (IP_VALUE & MASK) == IP_VALUE )) || return 1
+    SUBNET_NETWORK_IP="$NETWORK_IP"
+    SUBNET_PREFIX_LENGTH="$PREFIX"
+    SUBNET_CIDR="$NETWORK_IP/$PREFIX"
+}
+
 version_at_least() {
     local ACTUAL REQUIRED LOWEST
     ACTUAL=$(printf '%s' "$1" | sed -E 's/^[^0-9]*//')
@@ -1544,8 +1568,9 @@ if [[ ${#CLUSTER_NAMES[@]} -eq 0 ]]; then
 fi
 
 SELECTED_INDEX=$(select_option "Select the AHV Cluster for the NKP nodes" "${CLUSTER_NAMES[@]}") || exit 1
-AHV_CLUSTER="${CLUSTER_NAMES[$((SELECTED_INDEX - 1))]}"
-AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$((SELECTED_INDEX - 1))]}"
+CLUSTER_INDEX=$((SELECTED_INDEX - 1))
+AHV_CLUSTER="${CLUSTER_NAMES[$CLUSTER_INDEX]}"
+AHV_CLUSTER_EXT_ID="${CLUSTER_IDS[$CLUSTER_INDEX]}"
 
 show_progress "Loading networks for ${AHV_CLUSTER}"
 NETWORK_RESPONSE=$(call_curl_v4 "GET" "/networking/v4.0.a1/config/subnets?\$limit=100")
@@ -1561,52 +1586,62 @@ fi
 
 NETWORK_NAMES_ALL=()
 NETWORK_CIDRS_ALL=()
-NETWORK_NAMES_MATCHED=()
-NETWORK_CIDRS_MATCHED=()
-while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_CLUSTER_ID_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM; do
-    [[ -z "$NETWORK_NAME_ITEM" || -z "$NETWORK_IP_ITEM" || -z "$NETWORK_PREFIX_ITEM" ]] && continue
-    [[ ! "$NETWORK_PREFIX_ITEM" =~ ^[0-9]+$ || "$NETWORK_PREFIX_ITEM" -gt 32 ]] && continue
-    NETWORK_NAMES_ALL+=("$NETWORK_NAME_ITEM")
-    NETWORK_CIDRS_ALL+=("${NETWORK_IP_ITEM}/${NETWORK_PREFIX_ITEM}")
-    if [[ -n "$AHV_CLUSTER_EXT_ID" && "$NETWORK_CLUSTER_ID_ITEM" == "$AHV_CLUSTER_EXT_ID" ]]; then
-        NETWORK_NAMES_MATCHED+=("$NETWORK_NAME_ITEM")
-        NETWORK_CIDRS_MATCHED+=("${NETWORK_IP_ITEM}/${NETWORK_PREFIX_ITEM}")
+while IFS=$'\t' read -r NETWORK_NAME_ITEM NETWORK_IP_ITEM NETWORK_PREFIX_ITEM; do
+    [[ -z "$NETWORK_NAME_ITEM" ]] && continue
+
+    NETWORK_CIDR_ITEM=""
+    if [[ -n "$NETWORK_IP_ITEM" && "$NETWORK_PREFIX_ITEM" =~ ^[0-9]+$ && "$NETWORK_PREFIX_ITEM" -le 32 ]] && \
+       validate_ipv4 "$NETWORK_IP_ITEM"; then
+        NETWORK_CIDR_ITEM="${NETWORK_IP_ITEM}/${NETWORK_PREFIX_ITEM}"
     fi
+
+    NETWORK_NAMES_ALL+=("$NETWORK_NAME_ITEM")
+    NETWORK_CIDRS_ALL+=("$NETWORK_CIDR_ITEM")
 done < <(echo "$NETWORK_RESPONSE" | jq -r '
     .data[]?
     | [
         (.name // ""),
-        (if (.clusterReference | type) == "object" then (.clusterReference.extId // "") else (.clusterReference // "") end),
         (.ipConfig[0].ipv4.ipSubnet.ip.value // ""),
         (.ipConfig[0].ipv4.ipSubnet.prefixLength // "")
       ]
     | @tsv' 2>/dev/null)
 
-# Some PC versions omit clusterReference from the list response. If there
-# were no exact matches, retain all usable subnets and let the user choose.
-if [[ ${#NETWORK_NAMES_MATCHED[@]} -gt 0 ]]; then
-    NETWORK_NAMES=("${NETWORK_NAMES_MATCHED[@]}")
-    NETWORK_CIDRS=("${NETWORK_CIDRS_MATCHED[@]}")
-else
-    NETWORK_NAMES=("${NETWORK_NAMES_ALL[@]}")
-    NETWORK_CIDRS=("${NETWORK_CIDRS_ALL[@]}")
-fi
+# Use every subnet returned by Prism Central. Some valid CIDR-backed and
+# External IPAM networks do not include clusterReference in the list response.
+NETWORK_NAMES=("${NETWORK_NAMES_ALL[@]}")
+NETWORK_CIDRS=("${NETWORK_CIDRS_ALL[@]}")
 
 if [[ ${#NETWORK_NAMES[@]} -eq 0 ]]; then
-    show_message "No usable IPv4 AHV networks were returned by Prism Central.\n\nThe selected network must expose an IPv4 subnet and prefix length through the Networking v4 API."
+    show_message "No AHV networks were returned by Prism Central.\n\nConfirm that the selected AHV cluster has networks visible to this Prism Central account."
     exit 1
 fi
 
 NETWORK_LABELS=()
 for ((INDEX=0; INDEX<${#NETWORK_NAMES[@]}; INDEX++)); do
-    NETWORK_LABELS+=("${NETWORK_NAMES[$INDEX]} [${NETWORK_CIDRS[$INDEX]}]")
+    if [[ -n "${NETWORK_CIDRS[$INDEX]}" ]]; then
+        NETWORK_LABELS+=("${NETWORK_NAMES[$INDEX]} [${NETWORK_CIDRS[$INDEX]}]")
+    else
+        NETWORK_LABELS+=("${NETWORK_NAMES[$INDEX]} [External IPAM]")
+    fi
 done
 SELECTED_INDEX=$(select_option "Select the AHV Network / subnet" "${NETWORK_LABELS[@]}") || exit 1
 NETWORK_INDEX=$((SELECTED_INDEX - 1))
 NETWORK="${NETWORK_NAMES[$NETWORK_INDEX]}"
 SUBNET_CIDR="${NETWORK_CIDRS[$NETWORK_INDEX]}"
-SUBNET_NETWORK_IP="${SUBNET_CIDR%/*}"
-SUBNET_PREFIX_LENGTH="${SUBNET_CIDR##*/}"
+
+if [[ -z "$SUBNET_CIDR" ]]; then
+    while true; do
+        prompt_text "External IPAM network CIDR (for example 10.101.4.0/24)" "" EXTERNAL_NETWORK_CIDR
+        EXTERNAL_NETWORK_CIDR="$REPLY"
+        if parse_ipv4_cidr "$EXTERNAL_NETWORK_CIDR"; then
+            break
+        fi
+        show_message "Enter the external IPAM network address and prefix in CIDR format.\n\nExample: 10.101.4.0/24\n\nThe address must be the network address, not a host address."
+    done
+else
+    SUBNET_NETWORK_IP="${SUBNET_CIDR%/*}"
+    SUBNET_PREFIX_LENGTH="${SUBNET_CIDR##*/}"
+fi
 SUBNET_INPUT_PREFIX=$(network_input_prefix "$SUBNET_NETWORK_IP" "$SUBNET_PREFIX_LENGTH")
 
 show_progress "Loading storage containers from Prism Central"
@@ -1619,13 +1654,33 @@ if api_failed "$STORAGE_RESPONSE"; then
     exit 1
 fi
 
+if [[ -z "$AHV_CLUSTER_EXT_ID" ]]; then
+    show_message "Prism Central did not return an external ID for ${AHV_CLUSTER}.\n\nThe storage-container list cannot be safely scoped to the selected AHV cluster."
+    exit 1
+fi
+
 STORAGE_NAMES=()
-while IFS= read -r STORAGE_NAME_ITEM; do
+while IFS=$'\t' read -r STORAGE_NAME_ITEM STORAGE_CLUSTER_ID_ITEM STORAGE_CLUSTER_NAME_ITEM; do
     [[ -z "$STORAGE_NAME_ITEM" ]] && continue
-    STORAGE_NAMES+=("$STORAGE_NAME_ITEM")
-done < <(echo "$STORAGE_RESPONSE" | jq -r '.data[]?.name // empty' 2>/dev/null | sort -fu)
+
+    # The storage-container collection is Prism Central-wide.  Restrict the
+    # selector to containers owned by the AHV cluster selected above.  Some
+    # releases provide clusterExtId, while older responses may only include
+    # clusterName, so use the name only when the ID is absent.
+    if [[ "$STORAGE_CLUSTER_ID_ITEM" == "$AHV_CLUSTER_EXT_ID" ||
+          ( -z "$STORAGE_CLUSTER_ID_ITEM" && "$STORAGE_CLUSTER_NAME_ITEM" == "$AHV_CLUSTER" ) ]]; then
+        STORAGE_NAMES+=("$STORAGE_NAME_ITEM")
+    fi
+done < <(echo "$STORAGE_RESPONSE" | jq -r '
+    .data[]?
+    | [
+        (.name // ""),
+        (.clusterExtId // ""),
+        (.clusterName // "")
+      ]
+    | @tsv' 2>/dev/null | sort -fu)
 if [[ ${#STORAGE_NAMES[@]} -eq 0 ]]; then
-    show_message "No storage containers were returned by Prism Central."
+    show_message "No storage containers were found for ${AHV_CLUSTER}.\n\nPrism Central returned storage containers, but none were associated with the selected AHV cluster."
     exit 1
 fi
 SELECTED_INDEX=$(select_option "Select the storage container for persistent volumes" "${STORAGE_NAMES[@]}") || exit 1
