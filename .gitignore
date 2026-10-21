@@ -22,3 +22,4 @@ build/
 
 nkp-bundle*
 nkpDeploy_defaults.json
+nkp-bootstrap.conf
