@@ -1547,22 +1547,10 @@ if version_at_least "$VERSION_WITH_V" "2.19"; then
         [[ -z "$PROJECT_NAME_ITEM" ]] && continue
         PROJECT_NAMES_ALL+=("$PROJECT_NAME_ITEM")
     done < <(echo "$PROJECT_RESPONSE" | jq -r '.entities[]? | (.status.name // .spec.name // empty)' 2>/dev/null | sort -fu)
-    if [[ ${#PROJECT_NAMES_ALL[@]} -eq 0 ]]; then
-        show_message "No projects were returned by Prism Central.\n\nConfirm that the account can view projects in this Prism Central."
-        exit 1
-    fi
-
-    PC_PROJECT_DEFAULT="_internal"
-    PC_PROJECT_SAVED=$(get_default "pc_project")
+    # _internal is not always returned by the projects API, so always offer it first.
+    PROJECT_NAMES=("_internal")
     for PROJECT_NAME_ITEM in "${PROJECT_NAMES_ALL[@]}"; do
-        [[ -n "$PC_PROJECT_SAVED" && "$PROJECT_NAME_ITEM" == "$PC_PROJECT_SAVED" ]] && PC_PROJECT_DEFAULT="$PC_PROJECT_SAVED"
-    done
-    PROJECT_NAMES=()
-    for PROJECT_NAME_ITEM in "${PROJECT_NAMES_ALL[@]}"; do
-        [[ "$PROJECT_NAME_ITEM" == "$PC_PROJECT_DEFAULT" ]] && PROJECT_NAMES=("$PROJECT_NAME_ITEM")
-    done
-    for PROJECT_NAME_ITEM in "${PROJECT_NAMES_ALL[@]}"; do
-        [[ "$PROJECT_NAME_ITEM" == "$PC_PROJECT_DEFAULT" ]] || PROJECT_NAMES+=("$PROJECT_NAME_ITEM")
+        [[ "$PROJECT_NAME_ITEM" == "_internal" ]] || PROJECT_NAMES+=("$PROJECT_NAME_ITEM")
     done
     SELECTED_INDEX=$(select_option "Select the Prism Central project for the NKP VMs" "${PROJECT_NAMES[@]}") || exit 1
     PC_PROJECT="${PROJECT_NAMES[$((SELECTED_INDEX - 1))]}"
