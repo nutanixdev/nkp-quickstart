@@ -2,6 +2,9 @@ source ./nkp-env
 
 NKP_VERSION=$(nkp version -o=json |jq -r '.nkp.gitVersion')
 
+# Unset NUTANIX_PROJECT for versions less than 2.19...
+[[ "$(printf '%s\n' v2.19 "$NKP_VERSION" | sort -V | head -1)" == v2.19 ]] || unset NUTANIX_PROJECT
+
 nkp create cluster nutanix -c $CLUSTER_NAME \
     ${CLUSTER_HOSTNAME:+--cluster-hostname "$CLUSTER_HOSTNAME"} \
     --kind-cluster-image $REGISTRY_MIRROR_URL/mesosphere/konvoy-bootstrap:$NKP_VERSION \
@@ -19,6 +22,7 @@ nkp create cluster nutanix -c $CLUSTER_NAME \
     --worker-replicas $WORKER_NODES_REPLICAS \
     --csi-storage-container $NUTANIX_STORAGE_CONTAINER_NAME \
     --csi-hypervisor-attached-volumes=$CSI_HYPERVISOR_ATTACHED \
+    ${NUTANIX_PROJECT:+--pc-project "$NUTANIX_PROJECT"} \
     ${SSH_PUBLIC_KEY_FILE:+--ssh-public-key-file "$SSH_PUBLIC_KEY_FILE"} \
     ${REGISTRY_MIRROR_URL:+--registry-mirror-url https://"$REGISTRY_MIRROR_URL"} \
     ${REGISTRY_MIRROR_USERNAME:+--registry-mirror-username "$REGISTRY_MIRROR_USERNAME"} \
