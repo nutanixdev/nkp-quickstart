@@ -1536,7 +1536,7 @@ fi
 PC_PROJECT=""
 if version_at_least "$VERSION_WITH_V" "2.19"; then
     show_progress "Loading projects from Prism Central"
-    PROJECT_RESPONSE=$(call_curl_v4 "POST" "/nutanix/v3/projects/list" '{"kind":"project","length":500}')
+    PROJECT_RESPONSE=$(call_curl_v4 "POST" "/nutanix/v3/projects/list" '{"kind":"project","length":250}')
     if api_failed "$PROJECT_RESPONSE"; then
         show_message "$(api_error_message "$PROJECT_RESPONSE")"
         exit 1
