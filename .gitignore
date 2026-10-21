@@ -19,3 +19,6 @@ build/
 *.egg-info/
 
 *.log
+
+nkp-bundle*
+nkpDeploy_defaults.json
