@@ -29,3 +29,6 @@ export WORKER_CATEGORIES=             # Optional, used to add categories to the 
 # Optional, used to provide local NKP bundle images when air-gapped or with limited internet access. Provide the path to the tar files separated by comma if providing both konvoy and kommander bundles.
 # You must untar the bundle downloaded from Nutanix support portal (tar -xzpvf bundle.tar.gz) and provide the path to the resulting tar files in the container-images directory
 # export NKP_BUNDLE=./nkp-v2.17.1/container-images/kommander-image-bundle-v2.17.1.tar,./nkp-v2.17.1/container-images/konvoy-image-bundle-v2.17.1.tar
+
+# skip preflight checks
+# export SKIP_PREFLIGHT_CHECKS=Registry        # Skip preflight checks. Provide "all" to skip all checks, or a comma-separated list of check names. (default [])

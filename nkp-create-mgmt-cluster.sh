@@ -33,4 +33,5 @@ nkp create cluster nutanix -c $CLUSTER_NAME \
     ${CP_CATEGORIES:+--control-plane-pc-categories "$CP_CATEGORIES"} \
     ${WORKER_CATEGORIES:+--worker-pc-categories "$WORKER_CATEGORIES"} \
     ${NKP_BUNDLE:+--bundle "$NKP_BUNDLE"} \
+    ${SKIP_PREFLIGHT_CHECKS:+--skip-preflight-checks "$SKIP_PREFLIGHT_CHECKS"} \
     --self-managed
