@@ -136,7 +136,7 @@ The script automatically runs inside a `tmux` session named `nkp-deploy` (instal
 
 2. **Discovery:** Prompts for Prism Central credentials, then uses v4 APIs to populate the AHV cluster, network, storage container, and Rocky image selectors. The endpoint and username persist in `nkpDeploy_defaults.json`; the password is never saved.
 
-3. **Configuration:** Uses the selected network CIDR to validate the control-plane VIP and load-balancer range. The load-balancer end address is calculated from the selected start address and count; replica counts use bounded selectors.
+3. **Configuration:** Uses the selected network CIDR to validate the control-plane VIP and load-balancer range. Networks labeled **External IPAM** prompt for their network CIDR before continuing. The load-balancer end address is calculated from the selected start address and count; replica counts use bounded selectors.
 
 4. **Review and deploy:** Validates NKP, AOS, Prism Central, and Rocky-image compatibility, shows the final summary, waits for Y/N confirmation, and runs `nkp create cluster` inside the bordered interface.
 
@@ -146,7 +146,7 @@ The script reuses a local standard bundle when available. Otherwise, open the NK
 
 #### Prism Central selections
 
-The v4 API supplies selectors for the AHV cluster, network/CIDR, storage container, and versioned Rocky image. Enter the cluster name, network host portions, and node counts; the application validates and calculates the derived addresses.
+The v4 API supplies selectors for the AHV cluster, network/CIDR, storage container, and versioned Rocky image. Networks without an IPv4 CIDR in Prism Central are labeled **External IPAM**; provide their network address and prefix in CIDR format, such as `10.101.4.0/24`. The application then validates and calculates the derived VIP and load-balancer addresses normally.
 
 The deployment typically takes 45–60 minutes. Once it completes, configure the generated kubeconfig and view the dashboard details:
 
