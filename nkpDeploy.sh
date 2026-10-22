@@ -203,6 +203,7 @@ save_defaults() {
     jq -n \
         --arg pc_endpoint     "$PC_ENDPOINT" \
         --arg nutanix_user    "$NUTANIX_USER" \
+        --arg pc_project      "${PC_PROJECT:-$(get_default "pc_project")}" \
         --arg cluster_name    "$CLUSTER_NAME" \
         --arg vip             "$VIP" \
         --arg vm_image        "$VM_IMAGE" \
@@ -215,6 +216,7 @@ save_defaults() {
         '{
             pc_endpoint:     $pc_endpoint,
             nutanix_user:    $nutanix_user,
+            pc_project:      $pc_project,
             cluster_name:    $cluster_name,
             vip:             $vip,
             vm_image:        $vm_image,
@@ -1277,6 +1279,11 @@ render_final_summary() {
     frame_header "Final deployment summary"
     summary_row "NKP Version" "$VERSION_WITH_V"
     summary_row "Prism Central" "$PC_ENDPOINT"
+    local SUMMARY_ROWS=16
+    if [[ -n "$PC_PROJECT" ]]; then
+        summary_row "Prism Central Project" "$PC_PROJECT"
+        SUMMARY_ROWS=17
+    fi
     summary_row "Prism Central Version" "$PC_RAW"
     summary_row "AOS Version" "$AOS_VERSION"
     summary_row "Cluster Name" "$CLUSTER_NAME"
@@ -1291,7 +1298,6 @@ render_final_summary() {
     summary_row "Control Plane Nodes" "$CP_REPLICAS"
     summary_row "Worker Nodes" "$WORKER_REPLICAS"
     summary_row "Kubeconfig" "$KUBECONFIG"
-    local SUMMARY_ROWS=16
     local CONTENT_ROWS=$((SCREEN_ROWS - 7))
     local PROMPT_TEXT="  Proceed with deployment? [Y/N]: "
     local PROMPT_COLUMN=$((2 + ${#PROMPT_TEXT}))
@@ -1552,6 +1558,30 @@ AHV_CLUSTER_RESPONSE=$(call_curl_v4 "GET" "/clustermgmt/v4.0/config/clusters?\$l
 if api_failed "$AHV_CLUSTER_RESPONSE"; then
     show_message "$(api_error_message "$AHV_CLUSTER_RESPONSE")"
     exit 1
+fi
+
+# The --pc-project flag is only available in NKP 2.19 and later.
+PC_PROJECT=""
+if version_at_least "$VERSION_WITH_V" "2.19"; then
+    show_progress "Loading projects from Prism Central"
+    PROJECT_RESPONSE=$(call_curl_v4 "POST" "/nutanix/v3/projects/list" '{"kind":"project","length":250}')
+    if api_failed "$PROJECT_RESPONSE"; then
+        show_message "$(api_error_message "$PROJECT_RESPONSE")"
+        exit 1
+    fi
+
+    PROJECT_NAMES_ALL=()
+    while IFS= read -r PROJECT_NAME_ITEM; do
+        [[ -z "$PROJECT_NAME_ITEM" ]] && continue
+        PROJECT_NAMES_ALL+=("$PROJECT_NAME_ITEM")
+    done < <(echo "$PROJECT_RESPONSE" | jq -r '.entities[]? | (.status.name // .spec.name // empty)' 2>/dev/null | sort -fu)
+    # _internal is not always returned by the projects API, so always offer it first.
+    PROJECT_NAMES=("_internal")
+    for PROJECT_NAME_ITEM in "${PROJECT_NAMES_ALL[@]}"; do
+        [[ "$PROJECT_NAME_ITEM" == "_internal" ]] || PROJECT_NAMES+=("$PROJECT_NAME_ITEM")
+    done
+    SELECTED_INDEX=$(select_option "Select the Prism Central project for the NKP VMs" "${PROJECT_NAMES[@]}") || exit 1
+    PC_PROJECT="${PROJECT_NAMES[$((SELECTED_INDEX - 1))]}"
 fi
 
 CLUSTER_NAMES=()
@@ -2022,6 +2052,7 @@ DEPLOY_COMMAND=(
     --timeout "60m0s"
     --self-managed
 )
+[[ -n "$PC_PROJECT" ]] && DEPLOY_COMMAND+=(--pc-project "${PC_PROJECT}")
 
 "${DEPLOY_COMMAND[@]}" >"$DEPLOY_LOG" 2>&1 &
 NKP_PID=$!

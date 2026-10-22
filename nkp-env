@@ -6,6 +6,7 @@ export NUTANIX_USER=nkp-admin                                   # Prism Central 
 export NUTANIX_PASSWORD='supersecretpassword'                   # Keep the password enclosed between single quotes - Ex: 'password'
 export NUTANIX_ENDPOINT=10.38.207.7                             # Prism Central IP address or FQDN without https://
 export NUTANIX_PORT=9440                                        # Prism Central port (default: 9440)
+export NUTANIX_PROJECT=_internal                                # Prism Central project (default: _internal)
 export LB_IP_RANGE=10.38.141.51-10.38.141.52                    # Load balancer IP pool - Ex: 10.42.236.204-10.42.236.204
 export CONTROL_PLANE_ENDPOINT_IP=10.38.207.50                   # Kubernetes VIP. Must be in the same subnet as the VMs - Ex: 10.42.236.203
 export CONTROL_PLANE_REPLICAS=3                                 # Number of control plane VMs - Ex: 3
@@ -28,3 +29,6 @@ export WORKER_CATEGORIES=             # Optional, used to add categories to the 
 # Optional, used to provide local NKP bundle images when air-gapped or with limited internet access. Provide the path to the tar files separated by comma if providing both konvoy and kommander bundles.
 # You must untar the bundle downloaded from Nutanix support portal (tar -xzpvf bundle.tar.gz) and provide the path to the resulting tar files in the container-images directory
 # export NKP_BUNDLE=./nkp-v2.17.1/container-images/kommander-image-bundle-v2.17.1.tar,./nkp-v2.17.1/container-images/konvoy-image-bundle-v2.17.1.tar
+
+# skip preflight checks
+# export SKIP_PREFLIGHT_CHECKS=Registry        # Skip preflight checks. Provide "all" to skip all checks, or a comma-separated list of check names. (default [])
