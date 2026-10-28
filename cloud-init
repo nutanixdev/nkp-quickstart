@@ -9,16 +9,17 @@ users:
     lock_passwd: false
     plain_text_passwd: nutanix/4u
 
-write_files:
+# NOTE: Deprecated for NKP 2.19 and later Rocky OS images
+# write_files:
   # Overwrite sshd_config entirely — the CIS image ships it as a single
   # line (PasswordAuthentication no) with no Include directive, so
   # sshd_config.d/ drop-ins are never read. Directives go BEFORE the
   # Include so they win (sshd first-match-wins rule).
-  - path: /etc/ssh/sshd_config
-    owner: root:root
-    permissions: "0600"
-    content: |
-      Include /etc/ssh/sshd_config.d/*.conf
+  # - path: /etc/ssh/sshd_config
+  #   owner: root:root
+  #   permissions: "0600"
+  #   content: |
+  #     Include /etc/ssh/sshd_config.d/*.conf
 
 bootcmd:
   - mkdir -p /etc/docker
